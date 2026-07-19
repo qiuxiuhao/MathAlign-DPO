@@ -1,0 +1,197 @@
+schema_version: "1.0"
+
+project:
+  name: mathalign-dpo
+  run_mode: formal
+  seed: 42
+  description: >-
+    Formal RTX 4090 24GB mathematical reasoning post-training with
+    Qwen2.5-3B, NF4 QLoRA SFT and step-level DPO.
+
+model:
+  name_or_path: Qwen/Qwen2.5-3B-Instruct
+  trust_remote_code: false
+  torch_dtype: bfloat16
+  max_length: 1024
+  use_cache: false
+  gradient_checkpointing: true
+
+quantization:
+  enabled: true
+  backend: bitsandbytes
+  load_in_4bit: true
+  quant_type: nf4
+  use_double_quant: true
+  compute_dtype: bfloat16
+
+lora:
+  enabled: true
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+  bias: none
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+data:
+  dataset_name: AI-MO/NuminaMath-CoT
+  dataset_revision: 9d8d210c9f6a36c8f3cd84045668c9b7800ef517
+  source_split: train
+  train_samples: 5000
+  validation_samples: 200
+  evaluation_samples: 200
+  train_ratio: 0.95
+  validation_ratio: 0.025
+  evaluation_ratio: 0.025
+  raw_dir: data/raw
+  processed_dir: data/processed
+  normalized_train_file: data/processed/normalized_train.jsonl
+  normalized_validation_file: data/processed/normalized_validation.jsonl
+  normalized_eval_file: data/processed/normalized_eval.jsonl
+  step_train_file: data/processed/step_train.jsonl
+  step_validation_file: data/processed/step_validation.jsonl
+  step_eval_file: data/processed/step_eval.jsonl
+  sft_train_file: data/processed/sft_train.jsonl
+  sft_validation_file: data/processed/sft_validation.jsonl
+  dpo_train_file: data/processed/dpo_train.jsonl
+  dpo_validation_file: data/processed/dpo_validation.jsonl
+  eval_file: data/processed/eval.jsonl
+  statistics_file: data/processed/data_statistics.json
+  split_manifest_file: data/processed/split_manifest.json
+  manual_review_file: data/processed/manual_review_preferences.jsonl
+
+preprocessing:
+  normalize_line_endings: true
+  strip_outer_whitespace: true
+  max_consecutive_blank_lines: 2
+  minimum_steps: 2
+  require_final_answer_for_dpo: true
+  filter_over_length: true
+  truncate_over_length: false
+  system_prompt: You are a careful mathematical reasoning assistant.
+  user_instruction: >-
+    Solve the following mathematics problem. Show a clear step-by-step
+    derivation and put the final answer in \boxed{}.
+
+negative_sampling:
+  strategy: mixed
+  allowed_strategies:
+    - number_mutation
+    - operator_mutation
+    - mixed
+  negatives_per_step: 1
+  minimum_dpo_examples: 1000
+  maximum_dpo_examples: 5000
+  number_offset_choices:
+    - -3
+    - -2
+    - -1
+    - 1
+    - 2
+    - 3
+  skip_unmutable_steps: true
+  save_manual_review_samples: 100
+
+sft:
+  enabled: true
+  output_dir: outputs/checkpoints/formal/sft
+  learning_rate: 0.0002
+  num_train_epochs: 1
+  max_steps: 300
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16
+  warmup_ratio: 0.03
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  optimizer: paged_adamw_8bit
+  lr_scheduler_type: cosine
+  packing: false
+  eval_strategy: steps
+  eval_steps: 50
+  save_strategy: steps
+  save_steps: 50
+  save_total_limit: 2
+  logging_steps: 5
+
+dpo:
+  enabled: true
+  output_dir: outputs/checkpoints/formal/dpo
+  beta: 0.1
+  loss_type: sigmoid
+  learning_rate: 0.000005
+  num_train_epochs: 1
+  max_steps: 200
+  max_length: 1024
+  max_prompt_length: 768
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16
+  warmup_ratio: 0.03
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  optimizer: paged_adamw_8bit
+  lr_scheduler_type: cosine
+  eval_strategy: steps
+  eval_steps: 50
+  save_strategy: steps
+  save_steps: 50
+  save_total_limit: 2
+  logging_steps: 5
+
+evaluation:
+  output_dir: outputs/results/formal
+  batch_size: 1
+  max_new_tokens: 512
+  do_sample: false
+  temperature: 0.0
+  top_p: 1.0
+  num_beams: 1
+  samples: 200
+  metrics:
+    - answer_extraction_rate
+    - exact_match_accuracy
+    - invalid_output_rate
+    - average_output_tokens
+  model_stages:
+    - base
+    - sft
+    - dpo
+
+runtime:
+  backend: cuda
+  device: cuda
+  require_single_device: true
+  expected_device_name_contains: RTX 4090
+  mixed_precision: bf16
+  dataloader_num_workers: 2
+  pin_memory: true
+  report_to: none
+  log_peak_memory: true
+  log_elapsed_time: true
+  fail_on_backend_unavailable: true
+  fail_on_zero_trainable_parameters: true
+  allow_cpu_fallback: false
+
+output:
+  logs_dir: outputs/logs/formal
+  figures_dir: outputs/figures/formal
+  reports_dir: outputs/reports/formal
+  overwrite_existing_run: false
+  save_run_metadata: true
+  save_software_versions: true
+  save_git_commit: true
+
+smoke_test:
+  enabled_by_default: false
+  train_samples: 64
+  validation_samples: 16
+  dpo_samples: 32
+  max_steps: 10
+  evaluation_samples: 16

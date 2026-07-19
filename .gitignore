@@ -1,0 +1,11 @@
+data/raw/
+data/processed/
+outputs/
+checkpoints/
+logs/
+wandb/
+.cache/
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
