@@ -309,6 +309,56 @@ token_count <= 1024
 
 过滤必须记录配置和数量，不能静默截断正确解答。
 
+### Stage 3 tokenizer 过滤结果
+
+Stage 3 训练前会读取 Stage 2 SFT JSONL，并用当前模型 tokenizer 的
+chat template 计算真实 token 长度。训练使用的内存数据格式为 TRL
+prompt/completion 对话格式：
+
+```json
+{
+  "id": "numina_train_00000123_sft",
+  "source_id": "00000123",
+  "prompt": [
+    {
+      "role": "system",
+      "content": "You are a careful mathematical reasoning assistant."
+    },
+    {
+      "role": "user",
+      "content": "Solve the following mathematics problem..."
+    }
+  ],
+  "completion": [
+    {
+      "role": "assistant",
+      "content": "Complete correct reference solution."
+    }
+  ],
+  "token_count": 384,
+  "metadata": {}
+}
+```
+
+该格式不作为新的 `data/processed` 中间数据发布；它属于单次训练运行的内存
+视图。过滤统计写入 `run_metadata.json`：
+
+```json
+{
+  "token_statistics": {
+    "max_length": 512,
+    "train": {
+      "input_count": 253,
+      "kept_count": 240,
+      "filtered_count": 13,
+      "filtered_ids": []
+    }
+  }
+}
+```
+
+禁止对超长样本做静默截断。
+
 ---
 
 ## 6. 错误步骤结果

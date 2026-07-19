@@ -364,11 +364,37 @@ src/mathalign_dpo/training/train_sft.py
 职责：
 
 - 读取统一 SFT 数据；
+- 校验 Stage 2 manifest、SFT JSONL 行数和 sha256；
+- 使用模型 tokenizer 的真实 chat template 计算 token 长度；
+- 过滤超过 `model.max_length` 的样本，不截断；
 - 调用统一模型加载；
 - 配置 LoRA；
 - 创建 SFTTrainer；
 - 保存 adapter；
-- 保存实验元数据。
+- 保存实验元数据；
+- 重新加载 adapter 并运行少量推理 sanity check。
+
+Stage 3 的 SFT 入口只接受单个 YAML 配置文件。实际训练只允许 Mini 配置；
+formal 配置在 Stage 3 只做解析和共享加载路径兼容性测试，不执行 RTX 4090
+正式训练。
+
+Stage 3 训练输出目录为：
+
+```text
+config.sft.output_dir/<run_id>
+```
+
+显式传入的非空输出目录必须使用 `--overwrite` 才能替换。每次运行至少保存：
+
+```text
+final_adapter/
+tokenizer/
+trainer_state.json
+train_metrics.json
+loss_history.jsonl
+run_metadata.json
+adapter_reload_samples.jsonl
+```
 
 ### 5.9 DPO 训练
 
@@ -446,6 +472,7 @@ gradient accumulation 4
 - 不读取 CUDA 显存 API；
 - 不把 MPS Tensor 转交 CUDA 专属库；
 - 必须检测 `torch.backends.mps.is_available()`；
+- 不允许 `PYTORCH_ENABLE_MPS_FALLBACK=1`；
 - 评测 batch size 固定为 1；
 - 进程内存与耗时必须实测记录。
 

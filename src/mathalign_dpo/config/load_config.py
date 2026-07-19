@@ -55,6 +55,16 @@ def load_project_configs(mini_config: str | Path, formal_config: str | Path) -> 
     return ProjectConfigs(mini_path=mini_path, formal_path=formal_path, mini=mini, formal=formal)
 
 
+def load_single_config(config_path: str | Path, expected_mode: str | None = None) -> dict[str, Any]:
+    """Load and validate one approved run config."""
+
+    path = Path(config_path)
+    config = _load_yaml(path)
+    mode = expected_mode or str(config.get("project", {}).get("run_mode", ""))
+    _validate_single_config(config, path, expected_mode=mode)
+    return config
+
+
 def split_ratios(config: dict[str, Any]) -> dict[str, float]:
     """Return configured split ratios keyed by contract split name."""
 
@@ -150,17 +160,45 @@ def _validate_single_config(config: dict[str, Any], path: Path, expected_mode: s
 
     backend = config["runtime"].get("backend")
     quantization = config["quantization"]
+    model = config["model"]
+    lora = config["lora"]
+    sft = config["sft"]
+    runtime = config["runtime"]
     optimizer = config["sft"].get("optimizer")
+    if not bool(sft.get("enabled")):
+        raise ValueError(f"{path}: sft.enabled must be true")
+    if not bool(lora.get("enabled")):
+        raise ValueError(f"{path}: lora.enabled must be true")
+    if int(lora.get("rank", 0)) <= 0:
+        raise ValueError(f"{path}: lora.rank must be positive")
+    if int(lora.get("alpha", 0)) <= 0:
+        raise ValueError(f"{path}: lora.alpha must be positive")
+    if not isinstance(lora.get("target_modules"), list) or not lora["target_modules"]:
+        raise ValueError(f"{path}: lora.target_modules must be a non-empty list")
+    if int(model.get("max_length", 0)) <= 0:
+        raise ValueError(f"{path}: model.max_length must be positive")
+    if int(sft.get("max_steps", 0)) <= 0:
+        raise ValueError(f"{path}: sft.max_steps must be positive")
+    if int(sft.get("adapter_reload_samples", 0)) <= 0:
+        raise ValueError(f"{path}: sft.adapter_reload_samples must be positive")
+    if int(sft.get("adapter_reload_max_new_tokens", 0)) <= 0:
+        raise ValueError(f"{path}: sft.adapter_reload_max_new_tokens must be positive")
+    if runtime.get("allow_cpu_fallback") is not False:
+        raise ValueError(f"{path}: runtime.allow_cpu_fallback must be false")
     if backend == "mps":
         if quantization.get("enabled") or quantization.get("load_in_4bit"):
             raise ValueError(f"{path}: MPS config must not enable BitsAndBytes or 4-bit loading")
         if optimizer != "adamw_torch":
             raise ValueError(f"{path}: MPS SFT optimizer must be adamw_torch")
+        if model.get("torch_dtype") != "float16":
+            raise ValueError(f"{path}: MPS config must use model.torch_dtype = float16")
     elif backend == "cuda":
         if not quantization.get("enabled") or not quantization.get("load_in_4bit"):
             raise ValueError(f"{path}: CUDA config must enable 4-bit quantization")
         if quantization.get("quant_type") != "nf4":
             raise ValueError(f"{path}: CUDA config must use quantization.quant_type = nf4")
+        if quantization.get("compute_dtype") != "bfloat16":
+            raise ValueError(f"{path}: CUDA config must use quantization.compute_dtype = bfloat16")
     else:
         raise ValueError(f"{path}: runtime.backend must be mps or cuda")
 

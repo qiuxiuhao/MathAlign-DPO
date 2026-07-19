@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from mathalign_dpo.config.load_config import load_project_configs, sample_counts, split_ratios
+from mathalign_dpo.config.load_config import load_project_configs, load_single_config, sample_counts, split_ratios
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,11 +38,23 @@ class ConfigTests(unittest.TestCase):
         self.assertIs(configs.mini["quantization"]["enabled"], False)
         self.assertIs(configs.mini["quantization"]["load_in_4bit"], False)
         self.assertEqual(configs.mini["sft"]["optimizer"], "adamw_torch")
+        self.assertEqual(configs.mini["model"]["torch_dtype"], "float16")
+        self.assertIs(configs.mini["runtime"]["allow_cpu_fallback"], False)
+        self.assertEqual(configs.mini["sft"]["adapter_reload_samples"], 3)
 
         self.assertEqual(configs.formal["runtime"]["backend"], "cuda")
         self.assertIs(configs.formal["quantization"]["enabled"], True)
         self.assertIs(configs.formal["quantization"]["load_in_4bit"], True)
         self.assertEqual(configs.formal["quantization"]["quant_type"], "nf4")
+        self.assertEqual(configs.formal["quantization"]["compute_dtype"], "bfloat16")
+        self.assertEqual(configs.formal["sft"]["adapter_reload_samples"], 3)
+
+    def test_single_config_loader_parses_approved_configs(self) -> None:
+        mini = load_single_config(MINI)
+        formal = load_single_config(FORMAL)
+
+        self.assertEqual(mini["project"]["run_mode"], "mini")
+        self.assertEqual(formal["project"]["run_mode"], "formal")
 
     def test_rejects_project_stage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

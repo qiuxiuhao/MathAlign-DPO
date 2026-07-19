@@ -2,8 +2,10 @@
 
 一套面向数学推理的、可在 Mac M5 24GB 上运行 Mini 全链路，并在 RTX 4090 24GB 上完成正式实验的轻量级后训练项目。
 
-> **当前状态：Stage 2 — 步骤拆分、SFT 样本与 DPO 偏好数据构造已完成。**  
-> Stage 3 Mini SFT 待开始；模型训练、DPO 训练、评测和消融实验仍为 Planned，没有任何训练或评测实测结果。
+> **当前状态：Stage 3 — Mini SFT 已完成。**  
+> Mini SFT 已在 MPS FP16 LoRA 下完成 smoke 和约 30 steps 小规模训练，
+> 并保存/重载了 adapter。DPO 训练、Base/SFT/DPO 统一评测和消融实验仍为
+> Planned。
 
 ---
 
@@ -220,6 +222,26 @@ conda activate mathalign-dpo
 python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
+
+### 7.2 Stage 3 Mini SFT 命令
+
+Stage 3 先运行 smoke test，再运行 Mini SFT。首次运行会下载
+`Qwen/Qwen2.5-0.5B-Instruct` tokenizer 和模型权重。
+
+```bash
+conda run -n mathalign-dpo python -m scripts.train_sft \
+  --config configs/qwen25_0_5b_m5_24gb_mini.yaml \
+  --smoke-test \
+  --output-dir outputs/checkpoints/mini/sft_smoke
+```
+
+```bash
+conda run -n mathalign-dpo python -m scripts.train_sft \
+  --config configs/qwen25_0_5b_m5_24gb_mini.yaml
+```
+
+Stage 3 不允许 MPS 静默回退 CPU。如果 `torch.backends.mps` 不可用，或
+`PYTORCH_ENABLE_MPS_FALLBACK=1`，训练会直接失败并写入 `run_metadata.json`。
 
 ---
 
