@@ -229,6 +229,15 @@ src/mathalign_dpo/data/parse_steps.py
 - 记录 parse_status；
 - 输出步骤化数据。
 
+Stage 2 只使用规则解析，不使用模型或 tokenizer。解析顺序为：
+编号/Markdown 步骤标记、非空段落边界、保守句子/公式边界。无法得到至少
+`preprocessing.minimum_steps` 个可靠步骤时标记 `failed`，能拆步但无法提取
+答案时标记 `partial`。
+
+最终答案提取优先级为：最后一个平衡的 `\boxed{}` 或 `\fbox{}`、最后一个
+`####` 标记、显式 answer/final answer 短语、末尾附近选择题标记、末尾数字
+或分数。Stage 2 不做符号等价判断。
+
 ### 5.4 SFT 构造
 
 ```text
@@ -241,6 +250,10 @@ src/mathalign_dpo/data/build_sft.py
 - assistant 保存完整正确解答；
 - 使用 tokenizer chat template 检查长度；
 - 超长样本过滤而非静默截断。
+
+Stage 2 不加载 tokenizer，因此不执行 token 长度过滤，所有 token count
+字段保持 `null`，统计中记录 `token_length_status =
+not_checked_no_tokenizer`。真实 token 长度过滤推迟到训练前。
 
 ### 5.5 错误步骤生成
 
@@ -263,6 +276,10 @@ mixed
 - 确保错误步骤不等于正确步骤；
 - 输出修改位置、替换值、失败原因。
 
+所有负样本由 `seed|source_id|step_index|strategy` 决定。数字扰动跳过步骤
+编号，运算符扰动跳过一元负号和步骤编号，mixed 在首选策略失败时确定性
+回退到另一种策略。
+
 ### 5.6 DPO 偏好构造
 
 ```text
@@ -283,6 +300,10 @@ rejected = 第 i 个错误步骤
 - 保留 source_id 和 step_index；
 - 检查长度；
 - 输出统计和人工检查样本。
+
+Stage 2 的 DPO prompt 只能包含题目和当前步骤之前的正确步骤，禁止包含
+当前 chosen/rejected 步骤或任何错误历史。长度字段保持 `null`，不做 token
+过滤。
 
 ### 5.7 模型加载
 

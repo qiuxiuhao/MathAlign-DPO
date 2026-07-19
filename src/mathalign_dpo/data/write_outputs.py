@@ -1,4 +1,4 @@
-"""Transactional writers for Stage 1 data outputs."""
+"""Transactional writers for staged data outputs."""
 
 from __future__ import annotations
 
@@ -9,12 +9,13 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from mathalign_dpo.data.load_numina import validate_normalized_example
 
 
 Publisher = Any
+ManifestBuilder = Callable[[Mapping[str, Any], Mapping[str, Path], Mapping[str, str], Mapping[str, int]], Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,16 @@ class PublishedOutputs:
     hashes: dict[str, str]
     counts: dict[str, int]
     staging_dir: Path
+
+
+@dataclass(frozen=True)
+class JsonOutput:
+    """One JSON or JSONL output file to publish transactionally."""
+
+    path: Path
+    kind: str
+    payload: Any
+    rows: int | None = None
 
 
 def publish_stage1_outputs(
@@ -80,7 +91,77 @@ def publish_stage1_outputs(
         _validate_staged_outputs(staged_paths, manifest_payload)
 
         output_root.mkdir(parents=True, exist_ok=True)
-        _publish_with_rollback(staged_paths, final_paths, staging_dir, replace_file)
+        _publish_with_rollback(
+            staged_paths,
+            final_paths,
+            staging_dir,
+            replace_file,
+            publish_order=("train", "validation", "evaluation", "statistics", "manifest"),
+        )
+        shutil.rmtree(staging_dir)
+        return PublishedOutputs(paths=final_paths, hashes=hashes, counts=counts, staging_dir=staging_dir)
+    except BaseException:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
+
+
+def publish_json_outputs(
+    outputs: Mapping[str, JsonOutput],
+    manifest_name: str,
+    overwrite: bool,
+    run_id: str | None = None,
+    replace_file: Publisher = os.replace,
+    manifest_builder: ManifestBuilder | None = None,
+) -> PublishedOutputs:
+    """Publish arbitrary JSON/JSONL outputs through one staged transaction."""
+
+    run_name = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    final_manifest = outputs[manifest_name].path
+    output_root = final_manifest.parent
+    staging_dir = output_root / f".stage_{run_name}"
+    if staging_dir.exists():
+        raise FileExistsError(f"Staging directory already exists: {staging_dir}")
+    final_paths = {name: output.path for name, output in outputs.items()}
+    existing = [path for path in final_paths.values() if path.exists()]
+    if existing and not overwrite:
+        raise FileExistsError(f"Refusing to overwrite existing outputs: {existing}")
+
+    staging_dir.mkdir(parents=True)
+    try:
+        staged_paths = {name: staging_dir / output.path.name for name, output in outputs.items()}
+        hashes: dict[str, str] = {}
+        counts: dict[str, int] = {}
+        for name, output in outputs.items():
+            if name == manifest_name:
+                continue
+            if output.kind == "jsonl":
+                _write_jsonl(staged_paths[name], list(output.payload))
+                actual_rows = _count_jsonl_rows(staged_paths[name])
+                if output.rows is not None and actual_rows != output.rows:
+                    raise ValueError(f"Staged row count mismatch for {name}: expected {output.rows}, got {actual_rows}")
+                counts[name] = actual_rows
+            elif output.kind == "json":
+                _write_json(staged_paths[name], output.payload)
+            else:
+                raise ValueError(f"Unsupported output kind for {name}: {output.kind}")
+            hashes[name] = sha256_file(staged_paths[name])
+
+        manifest_output = outputs[manifest_name]
+        if manifest_output.kind != "json":
+            raise ValueError(f"Manifest output must be JSON: {manifest_name}")
+        manifest_payload = manifest_output.payload
+        if manifest_builder is not None:
+            manifest_payload = manifest_builder(manifest_output.payload, final_paths, hashes, counts)
+        _write_json(staged_paths[manifest_name], manifest_payload)
+        hashes[manifest_name] = sha256_file(staged_paths[manifest_name])
+
+        _publish_with_rollback(
+            staged_paths,
+            final_paths,
+            staging_dir,
+            replace_file,
+            publish_order=tuple(name for name in outputs if name != manifest_name) + (manifest_name,),
+        )
         shutil.rmtree(staging_dir)
         return PublishedOutputs(paths=final_paths, hashes=hashes, counts=counts, staging_dir=staging_dir)
     except BaseException:
@@ -190,12 +271,12 @@ def _publish_with_rollback(
     final_paths: Mapping[str, Path],
     staging_dir: Path,
     replace_file: Publisher,
+    publish_order: tuple[str, ...],
 ) -> None:
     backup_dir = staging_dir / "backup"
     backup_dir.mkdir()
     backups: dict[str, Path] = {}
     existed: dict[str, bool] = {}
-    publish_order = ("train", "validation", "evaluation", "statistics", "manifest")
     for name in publish_order:
         final_path = final_paths[name]
         final_path.parent.mkdir(parents=True, exist_ok=True)

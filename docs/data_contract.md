@@ -172,7 +172,8 @@ data/processed/step_<split>.jsonl
   "parse_status": "success",
   "metadata": {
     "step_count": 3,
-    "answer_extraction_method": "boxed"
+    "answer_extraction_method": "boxed",
+    "parse_failure_reason": null
   }
 }
 ```
@@ -190,6 +191,9 @@ failed
 - success：至少两个可用步骤且提取到最终答案；
 - partial：步骤可用，但最终答案未提取；
 - failed：没有可靠步骤序列。
+
+`partial` 和 `failed` 的 `final_answer` 必须为 `null`。`failed` 的
+`steps` 必须为空数组，并在 `metadata.parse_failure_reason` 中记录原因。
 
 ### 步骤规则
 
@@ -260,6 +264,11 @@ system → user → assistant
 ### 长度
 
 按照当前配置的 tokenizer chat template 渲染。
+
+Stage 2 不加载 tokenizer，不计算真实 token 长度，也不做 token 长度过滤。
+因此 Stage 2 生成的 SFT 样本中 `metadata.token_count` 必须为 `null`，并在
+统计中记录 `token_length_status = "not_checked_no_tokenizer"`。真实长度过滤
+推迟到训练前的 tokenizer 阶段。
 
 Mac Mini：
 
@@ -366,6 +375,13 @@ data/processed/dpo_<split>.jsonl
   ],
   "metadata": {
     "negative_strategy": "number_mutation",
+    "mutation": {
+      "strategy": "number_mutation",
+      "changed_span": "14",
+      "replacement": "16",
+      "success": true,
+      "reason": null
+    },
     "final_answer": "14",
     "prompt_step_count": 1,
     "prompt_token_count": null,
@@ -405,6 +421,10 @@ i = 0 时，prompt 中没有历史 assistant 步骤。
 - prompt 包含错误历史步骤；
 - 缺少 mutation metadata；
 - 长度超过配置限制。
+
+Stage 2 不加载 tokenizer，不计算真实 token 长度，也不按 token 长度过滤
+DPO 样本。`prompt_token_count`、`chosen_token_count` 和
+`rejected_token_count` 必须为 `null`，真实长度过滤推迟到训练前。
 
 ### 长度规则
 
@@ -595,6 +615,49 @@ Stage 1 只记录标准化和划分统计，不提前写入步骤、SFT 或 DPO
 同一基础数据可以根据两份配置分别输出视图统计。长度过滤统计
 在 Stage 2 之后由对应数据生产阶段添加。
 
+### Stage 2 扩展字段
+
+Stage 2 在同一 `data_statistics.json` 中增加：
+
+```json
+{
+  "stage2": {
+    "completed": true,
+    "token_length_status": "not_checked_no_tokenizer",
+    "step_counts": {
+      "train": 0,
+      "validation": 0,
+      "evaluation": 0
+    },
+    "parse_status_counts": {
+      "success": 0,
+      "partial": 0,
+      "failed": 0
+    },
+    "answer_extraction_counts": {},
+    "sft_counts_formal": {
+      "train": 0,
+      "validation": 0
+    },
+    "sft_counts_mini": {
+      "train": 0,
+      "validation": 0
+    },
+    "dpo_counts_formal": {
+      "train": 0,
+      "validation": 0
+    },
+    "dpo_counts_mini": {
+      "train": 0,
+      "validation": 0
+    },
+    "mutation_success_counts": {},
+    "mutation_failure_counts": {},
+    "manual_review_rows": 0
+  }
+}
+```
+
 ---
 
 ## 12. 划分策略
@@ -674,6 +737,31 @@ Stage 1 最小 Schema：
   },
   "files": {},
   "statistics_file": {}
+}
+```
+
+Stage 2 完成后，manifest 必须保留 Stage 1 字段，并新增：
+
+```json
+{
+  "stage2": {
+    "completed": true,
+    "token_length_status": "not_checked_no_tokenizer",
+    "views": {
+      "formal": {
+        "step": {"train": [], "validation": [], "evaluation": []},
+        "sft": {"train": [], "validation": []},
+        "dpo": {"train": [], "validation": []}
+      },
+      "mini": {
+        "step": {"train": [], "validation": [], "evaluation": []},
+        "sft": {"train": [], "validation": []},
+        "dpo": {"train": [], "validation": []}
+      }
+    },
+    "files": {},
+    "manual_review_file": {}
+  }
 }
 ```
 

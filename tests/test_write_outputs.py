@@ -7,7 +7,7 @@ import unittest
 from unittest import mock
 
 from mathalign_dpo.data import write_outputs
-from mathalign_dpo.data.write_outputs import publish_stage1_outputs, sha256_file, validate_completed_manifest
+from mathalign_dpo.data.write_outputs import JsonOutput, publish_json_outputs, publish_stage1_outputs, sha256_file, validate_completed_manifest
 
 
 def _row(index: int) -> dict[str, object]:
@@ -171,6 +171,87 @@ class WriteOutputsTests(unittest.TestCase):
             self.assertEqual(before, _snapshot(paths))
             validate_completed_manifest(paths["manifest"])
 
+    def test_generic_stage2_write_failure_preserves_old_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = _stage2_paths(root)
+            self._publish_old_stage2_outputs(paths)
+            before = _snapshot(paths)
+
+            def failing_write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
+                if path.name == "sft_train.jsonl":
+                    raise OSError("injected stage2 write failure")
+                write_outputs._write_jsonl_original(path, rows)
+
+            write_outputs._write_jsonl_original = write_outputs._write_jsonl
+            try:
+                with mock.patch.object(write_outputs, "_write_jsonl", side_effect=failing_write_jsonl):
+                    with self.assertRaisesRegex(OSError, "injected"):
+                        publish_json_outputs(
+                            outputs=_stage2_outputs(paths, version="new"),
+                            manifest_name="manifest",
+                            overwrite=True,
+                            run_id="new_stage2",
+                            manifest_builder=_stage2_manifest_builder,
+                        )
+            finally:
+                delattr(write_outputs, "_write_jsonl_original")
+
+            self.assertEqual(before, _snapshot(paths))
+            manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+            self.assertEqual(manifest["stage2"]["version"], "old")
+            self.assertFalse((root / ".stage_new_stage2").exists())
+
+    def test_generic_stage2_validation_failure_preserves_old_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = _stage2_paths(root)
+            self._publish_old_stage2_outputs(paths)
+            before = _snapshot(paths)
+
+            outputs = _stage2_outputs(paths, version="new")
+            outputs["dpo_train"] = JsonOutput(paths["dpo_train"], "jsonl", [{"id": "new"}], rows=2)
+            with self.assertRaisesRegex(ValueError, "row count mismatch"):
+                publish_json_outputs(
+                    outputs=outputs,
+                    manifest_name="manifest",
+                    overwrite=True,
+                    run_id="new_stage2",
+                    manifest_builder=_stage2_manifest_builder,
+                )
+
+            self.assertEqual(before, _snapshot(paths))
+            self.assertFalse((root / ".stage_new_stage2").exists())
+
+    def test_generic_stage2_publish_failure_rolls_back_old_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = _stage2_paths(root)
+            self._publish_old_stage2_outputs(paths)
+            before = _snapshot(paths)
+
+            def failing_replace(source: Path, target: Path) -> None:
+                source_path = Path(source)
+                if source_path.name == "sft_train.jsonl" and source_path.parent.name != "backup":
+                    raise OSError("injected stage2 publish failure")
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+                source_path.replace(target)
+
+            with self.assertRaisesRegex(OSError, "injected"):
+                publish_json_outputs(
+                    outputs=_stage2_outputs(paths, version="new"),
+                    manifest_name="manifest",
+                    overwrite=True,
+                    run_id="new_stage2",
+                    replace_file=failing_replace,
+                    manifest_builder=_stage2_manifest_builder,
+                )
+
+            self.assertEqual(before, _snapshot(paths))
+            manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+            self.assertTrue(manifest["stage2"]["completed"])
+            self.assertEqual(manifest["stage2"]["version"], "old")
+
     def _publish_old_outputs(self, paths: dict[str, Path]) -> None:
         publish_stage1_outputs(
             canonical={"train": [_row(1)], "validation": [_row(2)], "evaluation": [_row(3)]},
@@ -181,6 +262,63 @@ class WriteOutputsTests(unittest.TestCase):
             run_id="old",
         )
 
+    def _publish_old_stage2_outputs(self, paths: dict[str, Path]) -> None:
+        publish_json_outputs(
+            outputs=_stage2_outputs(paths, version="old"),
+            manifest_name="manifest",
+            overwrite=False,
+            run_id="old_stage2",
+            manifest_builder=_stage2_manifest_builder,
+        )
+
 
 def _snapshot(paths: dict[str, Path]) -> dict[str, tuple[str, str]]:
     return {name: (path.read_text(encoding="utf-8"), sha256_file(path)) for name, path in paths.items()}
+
+
+def _stage2_paths(root: Path) -> dict[str, Path]:
+    return {
+        "step_train": root / "step_train.jsonl",
+        "step_validation": root / "step_validation.jsonl",
+        "step_evaluation": root / "step_eval.jsonl",
+        "sft_train": root / "sft_train.jsonl",
+        "sft_validation": root / "sft_validation.jsonl",
+        "dpo_train": root / "dpo_train.jsonl",
+        "dpo_validation": root / "dpo_validation.jsonl",
+        "manual_review": root / "manual_review_preferences.jsonl",
+        "statistics": root / "data_statistics.json",
+        "manifest": root / "split_manifest.json",
+    }
+
+
+def _stage2_outputs(paths: dict[str, Path], version: str) -> dict[str, JsonOutput]:
+    row = {"id": version, "value": version}
+    return {
+        "step_train": JsonOutput(paths["step_train"], "jsonl", [row], rows=1),
+        "step_validation": JsonOutput(paths["step_validation"], "jsonl", [row], rows=1),
+        "step_evaluation": JsonOutput(paths["step_evaluation"], "jsonl", [row], rows=1),
+        "sft_train": JsonOutput(paths["sft_train"], "jsonl", [row], rows=1),
+        "sft_validation": JsonOutput(paths["sft_validation"], "jsonl", [row], rows=1),
+        "dpo_train": JsonOutput(paths["dpo_train"], "jsonl", [row], rows=1),
+        "dpo_validation": JsonOutput(paths["dpo_validation"], "jsonl", [row], rows=1),
+        "manual_review": JsonOutput(paths["manual_review"], "jsonl", [row], rows=1),
+        "statistics": JsonOutput(paths["statistics"], "json", {"version": version}),
+        "manifest": JsonOutput(paths["manifest"], "json", {"stage2": {"completed": False, "version": version}}),
+    }
+
+
+def _stage2_manifest_builder(
+    manifest: dict[str, object],
+    paths: dict[str, Path],
+    hashes: dict[str, str],
+    counts: dict[str, int],
+) -> dict[str, object]:
+    payload = dict(manifest)
+    stage2 = dict(payload["stage2"])
+    stage2["completed"] = True
+    stage2["files"] = {
+        name: {"path": str(paths[name]), "rows": counts[name], "sha256": hashes[name]}
+        for name in counts
+    }
+    payload["stage2"] = stage2
+    return payload

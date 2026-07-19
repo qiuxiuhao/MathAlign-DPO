@@ -301,13 +301,23 @@ configs/qwen25_3b_4090.yaml
 
 ## 11. 命令接口
 
-Stage 1 已提供数据准备入口：
+Stage 1 已提供 normalized 数据准备入口：
 
 ```bash
 python -m scripts.prepare_data \
   --mini-config configs/qwen25_0_5b_m5_24gb_mini.yaml \
   --formal-config configs/qwen25_3b_4090.yaml
 ```
+
+Stage 2 提供步骤解析、SFT 样本和 DPO 偏好数据构造入口：
+
+```bash
+python -m scripts.build_stage2_data \
+  --mini-config configs/qwen25_0_5b_m5_24gb_mini.yaml \
+  --formal-config configs/qwen25_3b_4090.yaml
+```
+
+Stage 2 不加载 tokenizer，不计算真实 token 长度，也不训练模型。
 
 以下训练和评测接口仍为 Planned：
 
