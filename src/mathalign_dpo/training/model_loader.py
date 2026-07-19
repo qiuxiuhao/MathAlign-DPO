@@ -59,6 +59,57 @@ def load_model_and_tokenizer(config: Mapping[str, Any], training_stage: str = "s
     return LoadedModelAndTokenizer(model=model, tokenizer=tokenizer, metadata=metadata)
 
 
+def load_base_model_and_tokenizer(config: Mapping[str, Any], training_stage: str = "dpo") -> LoadedModelAndTokenizer:
+    """Load a base model and tokenizer without attaching a fresh LoRA adapter."""
+
+    if training_stage not in {"dpo", "reload"}:
+        raise ValueError(f"Unsupported base model training_stage: {training_stage!r}")
+    validate_runtime_backend(config)
+    torch = importlib.import_module("torch")
+    transformers = importlib.import_module("transformers")
+
+    backend = str(config["runtime"]["backend"])
+    tokenizer = load_tokenizer(config)
+    if backend == "mps":
+        model, metadata = _load_mps_base_model(config, torch, transformers)
+    elif backend == "cuda":
+        model, metadata = _load_cuda_base_model(config, torch, transformers)
+    else:
+        raise ValueError(f"runtime.backend must be mps or cuda, got {backend!r}")
+    return LoadedModelAndTokenizer(model=model, tokenizer=tokenizer, metadata=metadata)
+
+
+def load_policy_model_from_sft_adapter(config: Mapping[str, Any], sft_adapter_dir: str | os.PathLike[str]) -> LoadedModelAndTokenizer:
+    """Load the configured base model and attach a trainable SFT adapter for DPO."""
+
+    peft = importlib.import_module("peft")
+    loaded = load_base_model_and_tokenizer(config, training_stage="dpo")
+    base_model = loaded.model
+    if str(config["runtime"]["backend"]) == "cuda" and hasattr(peft, "prepare_model_for_kbit_training"):
+        base_model = peft.prepare_model_for_kbit_training(
+            base_model,
+            use_gradient_checkpointing=bool(config["model"]["gradient_checkpointing"]),
+        )
+    model = peft.PeftModel.from_pretrained(
+        base_model,
+        sft_adapter_dir,
+        is_trainable=True,
+    )
+    backend = str(config["runtime"]["backend"])
+    if backend == "mps":
+        model.to("mps")
+    assert_trainable_parameters(model, expected_device_type=backend)
+    metadata = dict(loaded.metadata)
+    metadata.update(
+        {
+            "adapter_initialization": "stage3_sft",
+            "sft_adapter_dir": str(sft_adapter_dir),
+            "lora": _lora_metadata(config),
+        }
+    )
+    return LoadedModelAndTokenizer(model=model, tokenizer=loaded.tokenizer, metadata=metadata)
+
+
 def validate_runtime_backend(config: Mapping[str, Any]) -> dict[str, Any]:
     """Validate that the configured backend is available before loading model assets."""
 
@@ -81,6 +132,14 @@ def validate_runtime_backend(config: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _load_mps_model(config: Mapping[str, Any], torch: Any, transformers: Any, peft: Any) -> tuple[Any, dict[str, Any]]:
+    model, metadata = _load_mps_base_model(config, torch, transformers)
+    model = _apply_lora(model, config, peft)
+    _assert_trainable_parameters(model, expected_device_type="mps")
+    metadata["lora"] = _lora_metadata(config)
+    return model, metadata
+
+
+def _load_mps_base_model(config: Mapping[str, Any], torch: Any, transformers: Any) -> tuple[Any, dict[str, Any]]:
     if bool(config["quantization"]["enabled"]) or bool(config["quantization"]["load_in_4bit"]):
         raise ValueError("MPS config must not enable BitsAndBytes or 4-bit loading")
 
@@ -93,20 +152,30 @@ def _load_mps_model(config: Mapping[str, Any], torch: Any, transformers: Any, pe
         low_cpu_mem_usage=True,
     )
     _configure_model_for_training(model, config)
-    model = _apply_lora(model, config, peft)
     model.to("mps")
-    _assert_trainable_parameters(model, expected_device_type="mps")
     return model, {
         "backend": "mps",
         "torch_dtype": str(config["model"]["torch_dtype"]),
         "quantization": "none",
-        "lora": _lora_metadata(config),
         "device": "mps",
         "model_revision": model_revision_metadata(config),
     }
 
 
 def _load_cuda_model(config: Mapping[str, Any], torch: Any, transformers: Any, peft: Any) -> tuple[Any, dict[str, Any]]:
+    model, metadata = _load_cuda_base_model(config, torch, transformers)
+    if hasattr(peft, "prepare_model_for_kbit_training"):
+        model = peft.prepare_model_for_kbit_training(
+            model,
+            use_gradient_checkpointing=bool(config["model"]["gradient_checkpointing"]),
+        )
+    model = _apply_lora(model, config, peft)
+    _assert_trainable_parameters(model, expected_device_type="cuda")
+    metadata["lora"] = _lora_metadata(config)
+    return model, metadata
+
+
+def _load_cuda_base_model(config: Mapping[str, Any], torch: Any, transformers: Any) -> tuple[Any, dict[str, Any]]:
     if not bool(config["quantization"]["enabled"]) or not bool(config["quantization"]["load_in_4bit"]):
         raise ValueError("CUDA config must enable 4-bit quantization")
     if str(config["quantization"]["quant_type"]) != "nf4":
@@ -127,18 +196,10 @@ def _load_cuda_model(config: Mapping[str, Any], torch: Any, transformers: Any, p
         trust_remote_code=bool(config["model"]["trust_remote_code"]),
     )
     _configure_model_for_training(model, config)
-    if hasattr(peft, "prepare_model_for_kbit_training"):
-        model = peft.prepare_model_for_kbit_training(
-            model,
-            use_gradient_checkpointing=bool(config["model"]["gradient_checkpointing"]),
-        )
-    model = _apply_lora(model, config, peft)
-    _assert_trainable_parameters(model, expected_device_type="cuda")
     return model, {
         "backend": "cuda",
         "torch_dtype": str(config["model"]["torch_dtype"]),
         "quantization": "nf4_4bit",
-        "lora": _lora_metadata(config),
         "device": "cuda",
         "model_revision": model_revision_metadata(config),
     }
@@ -166,6 +227,12 @@ def _apply_lora(model: Any, config: Mapping[str, Any], peft: Any) -> Any:
 
 
 def _assert_trainable_parameters(model: Any, expected_device_type: str) -> None:
+    assert_trainable_parameters(model, expected_device_type)
+
+
+def assert_trainable_parameters(model: Any, expected_device_type: str) -> None:
+    """Fail if a model has no trainable parameters or trainables are off-device."""
+
     trainable = [(name, param) for name, param in model.named_parameters() if getattr(param, "requires_grad", False)]
     if not trainable:
         raise ValueError("LoRA model has zero trainable parameters")

@@ -32,6 +32,30 @@ class ModelLoaderTests(unittest.TestCase):
         self.assertEqual(loaded.metadata["backend"], "cuda")
         self.assertEqual(fake_transformers.bitsandbytes_calls, 1)
 
+    def test_base_loader_does_not_apply_lora(self) -> None:
+        fake_torch = _FakeTorch(backend="mps")
+        fake_transformers = _FakeTransformers("mps")
+        fake_peft = _FakePeft()
+
+        with mock.patch.object(model_loader.importlib, "import_module", side_effect=_imports(fake_torch, fake_transformers, fake_peft)):
+            loaded = model_loader.load_base_model_and_tokenizer(_config("mps"))
+
+        self.assertEqual(loaded.metadata["backend"], "mps")
+        self.assertEqual(fake_peft.get_peft_model_calls, 0)
+        self.assertNotIn("lora", loaded.metadata)
+
+    def test_policy_loader_attaches_trainable_sft_adapter(self) -> None:
+        fake_torch = _FakeTorch(backend="mps")
+        fake_transformers = _FakeTransformers("mps")
+        fake_peft = _FakePeft()
+
+        with mock.patch.object(model_loader.importlib, "import_module", side_effect=_imports(fake_torch, fake_transformers, fake_peft)):
+            loaded = model_loader.load_policy_model_from_sft_adapter(_config("mps"), "adapter")
+
+        self.assertEqual(fake_peft.from_pretrained_calls, [("adapter", True)])
+        self.assertEqual(loaded.metadata["adapter_initialization"], "stage3_sft")
+        self.assertEqual(loaded.model.to_device, "mps")
+
     def test_zero_trainable_parameters_fail(self) -> None:
         fake_torch = _FakeTorch(backend="mps")
         fake_transformers = _FakeTransformers("mps", trainable=False)
@@ -91,14 +115,33 @@ class _FakeTransformers:
 
 
 class _FakePeft:
+    def __init__(self):
+        self.get_peft_model_calls = 0
+        self.from_pretrained_calls = []
+
     def LoraConfig(self, **kwargs):
         return {"lora": kwargs}
 
     def get_peft_model(self, model, lora_config):
+        self.get_peft_model_calls += 1
         return model
 
     def prepare_model_for_kbit_training(self, model, use_gradient_checkpointing):
         return model
+
+    @property
+    def PeftModel(self):
+        parent = self
+
+        class _PeftModel:
+            @staticmethod
+            def from_pretrained(model, model_id, is_trainable=False, **kwargs):
+                parent.from_pretrained_calls.append((model_id, is_trainable))
+                for param in model.params:
+                    param.requires_grad = bool(is_trainable)
+                return model
+
+        return _PeftModel
 
 
 class _FakeTorch:

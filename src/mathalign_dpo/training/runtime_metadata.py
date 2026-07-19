@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import json
+import math
 import platform
 import resource
 import subprocess
@@ -50,12 +51,12 @@ class RunClock:
         }
 
 
-def build_run_id(stage: str, smoke_test: bool) -> str:
+def build_run_id(stage: str, smoke_test: bool, stage_number: int = 3) -> str:
     """Build a timestamped run ID."""
 
     suffix = "smoke" if smoke_test else "mini"
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    return f"{timestamp}_stage3_{stage}_{suffix}_{uuid.uuid4().hex[:8]}"
+    return f"{timestamp}_stage{stage_number}_{stage}_{suffix}_{uuid.uuid4().hex[:8]}"
 
 
 def collect_base_metadata(
@@ -87,6 +88,7 @@ def collect_base_metadata(
         "model": dict(config["model"]),
         "runtime": dict(config["runtime"]),
         "sft": dict(config["sft"]),
+        "dpo": dict(config.get("dpo", {})),
         "seed": int(config["project"]["seed"]),
         "git_commit": git_commit(),
         "system": system_metadata(),
@@ -190,7 +192,7 @@ def write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True)
+        json.dump(json_safe(payload), handle, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True)
         handle.write("\n")
 
 
@@ -200,5 +202,19 @@ def write_jsonl(path: Path, rows: list[Mapping[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, allow_nan=False, sort_keys=True))
+            handle.write(json.dumps(json_safe(row), ensure_ascii=False, allow_nan=False, sort_keys=True))
             handle.write("\n")
+
+
+def json_safe(value: Any) -> Any:
+    """Return a JSON-compliant value, replacing non-finite floats with null."""
+
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [json_safe(item) for item in value]
+    return value

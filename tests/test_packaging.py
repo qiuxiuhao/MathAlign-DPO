@@ -104,6 +104,18 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--config", result.stdout)
 
+    def test_train_dpo_help_runs(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "scripts.train_dpo", "--help"],
+            cwd=ROOT,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--sft-run-dir", result.stdout)
+
 
 def _read_requirements() -> list[str]:
     lines = []

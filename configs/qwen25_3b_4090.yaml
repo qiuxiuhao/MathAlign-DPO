@@ -149,6 +149,8 @@ dpo:
   save_steps: 50
   save_total_limit: 2
   logging_steps: 5
+  adapter_reload_samples: 1
+  adapter_reload_max_new_tokens: 32
 
 evaluation:
   output_dir: outputs/results/formal

@@ -2,10 +2,10 @@
 
 一套面向数学推理的、可在 Mac M5 24GB 上运行 Mini 全链路，并在 RTX 4090 24GB 上完成正式实验的轻量级后训练项目。
 
-> **当前状态：Stage 3 — Mini SFT 收尾修复已实现，等待 MPS 重跑验收。**  
-> Stage 3 已支持事务式输出发布、固定模型 revision、effective config 元数据、
-> tokenizer 过滤后精确 256 条 Mini SFT 选择、显式 eval 和 adapter/tokenizer
-> 重载验证。DPO 训练、Base/SFT/DPO 统一评测和消融实验仍为 Planned。
+> **当前状态：Stage 4 — Mini DPO 已实现，等待 MPS 运行验收。**  
+> Stage 4 已增加 Mini DPO 入口、Stage 2 DPO manifest/hash 校验、真实
+> tokenizer 长度过滤、Stage 3 SFT adapter 初始化、事务式输出发布和 adapter
+> reload 验证。Base/SFT/DPO 统一评测和消融实验仍为 Planned。
 
 ---
 
@@ -243,6 +243,29 @@ conda run -n mathalign-dpo python -m scripts.train_sft \
 Stage 3 不允许 MPS 静默回退 CPU。如果 `torch.backends.mps` 不可用，或
 `PYTORCH_ENABLE_MPS_FALLBACK=1`，训练会直接失败并写入 `run_metadata.json`。
 
+### 7.3 Stage 4 Mini DPO 命令
+
+Stage 4 必须显式指定一个已完成的 Stage 3 Mini SFT 输出目录。正常 Mini DPO
+要求该 SFT run 不是 smoke run，并且 tokenizer 过滤后实际训练样本数为 256。
+
+```bash
+conda run -n mathalign-dpo python -m scripts.train_dpo \
+  --config configs/qwen25_0_5b_m5_24gb_mini.yaml \
+  --sft-run-dir outputs/checkpoints/mini/sft/<completed_stage3_run> \
+  --smoke-test \
+  --output-dir outputs/checkpoints/mini/dpo_smoke \
+  --overwrite
+```
+
+```bash
+conda run -n mathalign-dpo python -m scripts.train_dpo \
+  --config configs/qwen25_0_5b_m5_24gb_mini.yaml \
+  --sft-run-dir outputs/checkpoints/mini/sft/<completed_stage3_run>
+```
+
+Stage 4 会在送入 TRL `DPOTrainer` 前检查 `prompt/chosen/rejected` 真实 token
+长度；超长样本会被过滤并记录，不会交给 Trainer 静默截断。
+
 ---
 
 ## 8. Stage 0 文件
@@ -295,7 +318,7 @@ MathAlign-DPO/
 | Stage 1 | NuminaMath 标准化与划分 | Mac CPU |
 | Stage 2 | 步骤拆分、SFT/DPO 数据 | Mac CPU |
 | Stage 3 | 0.5B Mini SFT，验证正式入口 | Mac MPS / 4090 smoke |
-| Stage 4 | 0.5B Mini DPO，3B DPO smoke | Mac MPS / 4090 |
+| Stage 4 | 0.5B Mini DPO | Mac MPS |
 | Stage 5 | 统一评测 | Mac Mini / 4090 正式 |
 | Stage 6 | 正式实验、消融、简历化 | RTX 4090 |
 

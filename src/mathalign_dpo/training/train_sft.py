@@ -16,6 +16,7 @@ from mathalign_dpo.training.runtime_metadata import (
     build_run_id,
     collect_base_metadata,
     finalize_metadata,
+    json_safe,
     write_json,
     write_jsonl,
 )
@@ -458,4 +459,4 @@ def cli_payload(result: Mapping[str, Any]) -> str:
         "artifacts": result.get("artifacts"),
         "error": result.get("error"),
     }
-    return json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True)
+    return json.dumps(json_safe(summary), ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True)

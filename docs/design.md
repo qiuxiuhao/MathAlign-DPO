@@ -417,13 +417,34 @@ src/mathalign_dpo/training/train_dpo.py
 
 职责：
 
-- 从 SFT adapter 初始化 policy；
-- 读取统一偏好数据；
-- 创建 DPOTrainer；
-- 保存 DPO adapter；
-- 保存训练指标和元数据。
+- 读取并校验 Stage 2 DPO manifest、DPO JSONL 行数和 sha256；
+- 使用模型 tokenizer 的真实 chat template 计算 prompt/chosen/rejected token
+  长度；
+- 在项目代码中强制 `dpo.max_prompt_length` 和 `dpo.max_length`，过滤超长样本；
+- 从显式传入的 Stage 3 SFT adapter 初始化 policy；
+- 使用 PEFT policy、`ref_model=None` 和官方 TRL `DPOTrainer`；
+- 保存 DPO adapter、tokenizer、训练指标、偏好 sanity check、reload 生成样本
+  和运行元数据。
 
-TRL 版本兼容方式必须在 Stage 4 基于实际安装版本确定，不得提前编写大量兼容分支。
+Stage 4 的 TRL 版本为 `0.29.1`。该版本的 `DPOConfig` 不提供
+`max_prompt_length` 参数，因此 prompt 长度边界由项目在创建 Trainer 前校验；
+`DPOConfig.max_length` 仍传入 TRL，并在 Trainer 初始化后再次断言 tokenized
+dataset 没有超过该长度。
+
+Mini DPO 正常运行要求选择 256 条 train 和 32 条 validation 偏好对。若 Stage
+2 Mini DPO view 在 `max_length = 512`、`max_prompt_length = 384` 下不足目标
+数量，允许从 Stage 2 formal DPO view 按确定性候选池扩展并稳定 rank 选择；
+禁止随机补样本，禁止截断 prompt 或 chosen/rejected。
+
+Stage 4 训练输出目录为：
+
+```text
+config.dpo.output_dir/<run_id>
+```
+
+显式传入的非空输出目录必须使用 `--overwrite` 才能替换。新训练先写入隐藏
+staging 目录；只有训练、显式 eval、adapter 保存、tokenizer 保存、metadata
+写入、偏好 sanity check 和 adapter reload 推理都成功后，才发布到最终目录。
 
 ### 5.10 统一评测
 

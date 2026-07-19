@@ -163,10 +163,14 @@ def _validate_single_config(config: dict[str, Any], path: Path, expected_mode: s
     model = config["model"]
     lora = config["lora"]
     sft = config["sft"]
+    dpo = config["dpo"]
     runtime = config["runtime"]
-    optimizer = config["sft"].get("optimizer")
+    sft_optimizer = config["sft"].get("optimizer")
+    dpo_optimizer = config["dpo"].get("optimizer")
     if not bool(sft.get("enabled")):
         raise ValueError(f"{path}: sft.enabled must be true")
+    if not bool(dpo.get("enabled")):
+        raise ValueError(f"{path}: dpo.enabled must be true")
     if not bool(lora.get("enabled")):
         raise ValueError(f"{path}: lora.enabled must be true")
     if int(lora.get("rank", 0)) <= 0:
@@ -185,13 +189,33 @@ def _validate_single_config(config: dict[str, Any], path: Path, expected_mode: s
         raise ValueError(f"{path}: sft.adapter_reload_samples must be positive")
     if int(sft.get("adapter_reload_max_new_tokens", 0)) <= 0:
         raise ValueError(f"{path}: sft.adapter_reload_max_new_tokens must be positive")
+    if float(dpo.get("beta", 0.0)) <= 0.0:
+        raise ValueError(f"{path}: dpo.beta must be positive")
+    if dpo.get("loss_type") != "sigmoid":
+        raise ValueError(f"{path}: Stage 4 supports only dpo.loss_type = sigmoid")
+    if int(dpo.get("max_steps", 0)) <= 0:
+        raise ValueError(f"{path}: dpo.max_steps must be positive")
+    if int(dpo.get("max_length", 0)) <= 0:
+        raise ValueError(f"{path}: dpo.max_length must be positive")
+    if int(dpo.get("max_prompt_length", 0)) <= 0:
+        raise ValueError(f"{path}: dpo.max_prompt_length must be positive")
+    if int(dpo.get("adapter_reload_samples", 0)) <= 0:
+        raise ValueError(f"{path}: dpo.adapter_reload_samples must be positive")
+    if int(dpo.get("adapter_reload_max_new_tokens", 0)) <= 0:
+        raise ValueError(f"{path}: dpo.adapter_reload_max_new_tokens must be positive")
+    if int(dpo["max_prompt_length"]) >= int(dpo["max_length"]):
+        raise ValueError(f"{path}: dpo.max_prompt_length must be less than dpo.max_length")
+    if int(dpo["max_length"]) > int(model["max_length"]):
+        raise ValueError(f"{path}: dpo.max_length must not exceed model.max_length")
     if runtime.get("allow_cpu_fallback") is not False:
         raise ValueError(f"{path}: runtime.allow_cpu_fallback must be false")
     if backend == "mps":
         if quantization.get("enabled") or quantization.get("load_in_4bit"):
             raise ValueError(f"{path}: MPS config must not enable BitsAndBytes or 4-bit loading")
-        if optimizer != "adamw_torch":
+        if sft_optimizer != "adamw_torch":
             raise ValueError(f"{path}: MPS SFT optimizer must be adamw_torch")
+        if dpo_optimizer != "adamw_torch":
+            raise ValueError(f"{path}: MPS DPO optimizer must be adamw_torch")
         if model.get("torch_dtype") != "float16":
             raise ValueError(f"{path}: MPS config must use model.torch_dtype = float16")
     elif backend == "cuda":

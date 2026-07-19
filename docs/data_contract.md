@@ -340,6 +340,80 @@ prompt/completion 对话格式：
 }
 ```
 
+## 6. DPO 样本
+
+### 文件
+
+```text
+data/processed/dpo_<split>.jsonl
+```
+
+### Schema
+
+```json
+{
+  "schema_version": "1.0",
+  "id": "numina_train_00000123_step_002_number_mutation",
+  "source_id": "00000123",
+  "step_index": 2,
+  "prompt": [
+    {"role": "system", "content": "You are a careful mathematical reasoning assistant."},
+    {"role": "user", "content": "Solve the following mathematics problem..."},
+    {"role": "assistant", "content": "Previous correct step."}
+  ],
+  "chosen": [
+    {"role": "assistant", "content": "Current correct step."}
+  ],
+  "rejected": [
+    {"role": "assistant", "content": "Current mutated incorrect step."}
+  ],
+  "token_count": null,
+  "metadata": {
+    "negative_strategy": "mixed",
+    "token_length_status": "not_checked_no_tokenizer"
+  }
+}
+```
+
+### Stage 4 tokenizer 过滤结果
+
+Stage 4 训练前读取 Stage 2 DPO JSONL，并用当前模型 tokenizer 的 chat template
+计算真实 token 长度。训练使用的内存数据格式仍为 TRL conversational preference
+格式：
+
+```json
+{
+  "id": "numina_train_00000123_step_002_number_mutation",
+  "source_id": "00000123",
+  "prompt": [],
+  "chosen": [],
+  "rejected": [],
+  "token_count": {
+    "prompt": 320,
+    "chosen_total": 384,
+    "rejected_total": 385,
+    "chosen_completion": 64,
+    "rejected_completion": 65
+  },
+  "metadata": {}
+}
+```
+
+该格式不作为新的 `data/processed` 中间数据发布；它属于单次 DPO 训练运行的
+内存视图。Stage 4 必须在送入 TRL `DPOTrainer` 前强制：
+
+```text
+prompt <= dpo.max_prompt_length
+chosen_total <= dpo.max_length
+rejected_total <= dpo.max_length
+chosen_completion > 0
+rejected_completion > 0
+```
+
+TRL `DPOConfig.max_length` 仍会传入 Trainer，但项目不得依赖 Trainer 静默截断。
+过滤统计写入 `run_metadata.json`。Mini DPO 在 512/384 长度配置下允许从 formal
+DPO view 确定性扩展，以获得 256 条 train 和 32 条 validation 合法偏好对。
+
 该格式不作为新的 `data/processed` 中间数据发布；它属于单次训练运行的内存
 视图。过滤统计写入 `run_metadata.json`：
 
