@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
@@ -26,6 +28,7 @@ class FieldAudit:
     id_strategy: str
     problem_field: str
     solution_field: str
+    source_rows_sha256: str
 
 
 @dataclass(frozen=True)
@@ -76,6 +79,7 @@ def audit_rows(rows: Iterable[Mapping[str, Any]]) -> FieldAudit:
         id_strategy="native_field" if id_field else "row_index_fallback",
         problem_field=problem_field,
         solution_field=solution_field,
+        source_rows_sha256=hash_source_rows(materialized),
     )
 
 
@@ -95,6 +99,8 @@ def normalize_rows(
     seen_ids: set[str] = set()
 
     for row_index, row in enumerate(materialized):
+        source_id = build_source_id(row, row_index, audit.id_field)
+        stable_id = f"numina_{source_split}_{source_id}"
         problem = row.get(audit.problem_field)
         solution = row.get(audit.solution_field)
         if not isinstance(problem, str):
@@ -116,8 +122,6 @@ def normalize_rows(
             rejected["problem_equals_solution"] += 1
             continue
 
-        source_id = build_source_id(row, row_index, audit.id_field)
-        stable_id = f"numina_{source_split}_{source_id}"
         if stable_id in seen_ids:
             rejected["duplicate_id"] += 1
             continue
@@ -139,6 +143,17 @@ def normalize_rows(
         )
 
     return NormalizationResult(examples=examples, rejected=dict(rejected), audit=audit)
+
+
+def hash_source_rows(rows: Iterable[Mapping[str, Any]]) -> str:
+    """Hash raw rows in source order for fixed-revision drift checks."""
+
+    digest = hashlib.sha256()
+    for row in rows:
+        payload = json.dumps(row, ensure_ascii=False, allow_nan=False, sort_keys=True, default=str)
+        digest.update(payload.encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def normalize_text(text: str, preprocessing: Mapping[str, Any]) -> str:

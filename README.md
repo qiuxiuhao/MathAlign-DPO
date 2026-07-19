@@ -211,6 +211,16 @@ Web 界面
 
 Mac Mini 模式不使用 BitsAndBytes。
 
+### 7.1 Stage 1 环境安装
+
+```bash
+conda create -n mathalign-dpo python=3.11 -y
+conda activate mathalign-dpo
+
+python -m pip install -r requirements.txt
+python -m pip install -e .
+```
+
 ---
 
 ## 8. Stage 0 文件

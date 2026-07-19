@@ -211,7 +211,10 @@ source-level split 归属；`train_samples`、`validation_samples` 和
 
 所有 Stage 1 输出先写入 `data/processed/.stage_<run_id>/`，完成 schema、
 计数和 sha256 校验后再发布最终文件，禁止静默覆盖或留下完成标记不真实的
-manifest。
+manifest。覆盖已有输出时，发布流程必须先备份旧文件；如果新运行在
+staging、校验或最终发布阶段失败，旧输出和旧 manifest 必须保持可读且
+hash 不变。消费者只能读取 `completed == true` 且 manifest 记录的行数和
+sha256 与实际文件一致的数据集。
 
 ### 5.3 步骤拆分
 

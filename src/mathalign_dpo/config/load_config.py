@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 SPLITS = ("train", "validation", "evaluation")
 
@@ -100,120 +102,11 @@ def output_paths(config: dict[str, Any], output_dir: str | Path | None = None) -
 def _load_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Config file does not exist: {path}")
-    text = path.read_text(encoding="utf-8")
-    try:
-        import yaml
-
-        loaded = yaml.safe_load(text)
-    except ImportError:
-        loaded = _simple_yaml_load(text)
+    with path.open("r", encoding="utf-8") as handle:
+        loaded = yaml.safe_load(handle)
     if not isinstance(loaded, dict):
         raise ValueError(f"Config must be a YAML mapping: {path}")
     return loaded
-
-
-def _simple_yaml_load(text: str) -> dict[str, Any]:
-    """Parse the limited YAML subset used by the two checked-in configs."""
-
-    lines = _strip_yaml_comments(text.splitlines())
-    parsed, index = _parse_mapping(lines, 0, 0)
-    if index != len(lines):
-        raise ValueError("Unsupported YAML structure in config")
-    return parsed
-
-
-def _strip_yaml_comments(raw_lines: list[str]) -> list[str]:
-    lines: list[str] = []
-    for raw_line in raw_lines:
-        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
-            continue
-        lines.append(raw_line.rstrip())
-    return lines
-
-
-def _parse_mapping(lines: list[str], start: int, indent: int) -> tuple[dict[str, Any], int]:
-    result: dict[str, Any] = {}
-    index = start
-    while index < len(lines):
-        line = lines[index]
-        current_indent = len(line) - len(line.lstrip(" "))
-        if current_indent < indent:
-            break
-        if current_indent > indent:
-            raise ValueError(f"Unexpected indentation in YAML line: {line}")
-        stripped = line.strip()
-        if stripped.startswith("- "):
-            break
-        key, separator, remainder = stripped.partition(":")
-        if not separator:
-            raise ValueError(f"Expected YAML mapping entry: {line}")
-        remainder = remainder.strip()
-        if remainder in {">-", "|-"}:
-            value, index = _parse_block_scalar(lines, index + 1, indent + 2)
-        elif remainder:
-            value = _parse_scalar(remainder)
-            index += 1
-        else:
-            value, index = _parse_child(lines, index + 1, indent + 2)
-        result[key] = value
-    return result, index
-
-
-def _parse_child(lines: list[str], start: int, indent: int) -> tuple[Any, int]:
-    if start >= len(lines):
-        return {}, start
-    stripped = lines[start].strip()
-    if stripped.startswith("- "):
-        return _parse_list(lines, start, indent)
-    return _parse_mapping(lines, start, indent)
-
-
-def _parse_list(lines: list[str], start: int, indent: int) -> tuple[list[Any], int]:
-    result: list[Any] = []
-    index = start
-    while index < len(lines):
-        line = lines[index]
-        current_indent = len(line) - len(line.lstrip(" "))
-        if current_indent < indent:
-            break
-        if current_indent != indent:
-            raise ValueError(f"Unexpected list indentation in YAML line: {line}")
-        stripped = line.strip()
-        if not stripped.startswith("- "):
-            break
-        result.append(_parse_scalar(stripped[2:].strip()))
-        index += 1
-    return result, index
-
-
-def _parse_block_scalar(lines: list[str], start: int, indent: int) -> tuple[str, int]:
-    chunks: list[str] = []
-    index = start
-    while index < len(lines):
-        line = lines[index]
-        current_indent = len(line) - len(line.lstrip(" "))
-        if current_indent < indent:
-            break
-        chunks.append(line[indent:].strip())
-        index += 1
-    return " ".join(chunk for chunk in chunks if chunk), index
-
-
-def _parse_scalar(value: str) -> Any:
-    if value in {"null", "None", "~"}:
-        return None
-    if value == "true":
-        return True
-    if value == "false":
-        return False
-    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
-        return value[1:-1]
-    try:
-        if "." not in value:
-            return int(value)
-        return float(value)
-    except ValueError:
-        return value
 
 
 def _validate_single_config(config: dict[str, Any], path: Path, expected_mode: str) -> None:

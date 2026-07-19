@@ -586,7 +586,8 @@ Stage 1 只记录标准化和划分统计，不提前写入步骤、SFT 或 DPO
     "field_types": {},
     "empty_counts": {},
     "problem_field": "problem",
-    "solution_field": "solution"
+    "solution_field": "solution",
+    "source_rows_sha256": "..."
   }
 }
 ```
@@ -647,6 +648,7 @@ Stage 1 最小 Schema：
   "seed": 42,
   "smoke_test": false,
   "split_method": "sha256_source_id_bucket_v1",
+  "source_rows_sha256": "...",
   "split_ratios": {
     "train": 0.95,
     "validation": 0.025,
@@ -677,6 +679,14 @@ Stage 1 最小 Schema：
 
 `completed: true` 只能在所有 staged 文件通过校验并发布后写入最终
 manifest。
+
+后续消费者只有在以下条件全部满足时才能读取 Stage 1 数据：
+
+- `split_manifest.json` 存在；
+- `completed == true`；
+- manifest 中每个文件的 `rows` 与实际 JSONL 行数一致；
+- manifest 中每个文件的 `sha256` 与实际文件一致；
+- statistics 文件存在且 hash 与 manifest 记录一致。
 
 ---
 
@@ -714,7 +724,9 @@ data/processed/.stage_<run_id>/
 ```
 
 只有当 JSONL schema 校验、行数校验和 sha256 记录全部完成后，才将
-staging 文件发布到最终文件名。默认不得静默覆盖已有输出。
+staging 文件发布到最终文件名。默认不得静默覆盖已有输出。覆盖发布必须
+先保留旧输出备份；如果新运行在 staging、校验或最终发布阶段失败，旧的
+完整输出必须保持可读且 hash 不变。
 
 ---
 

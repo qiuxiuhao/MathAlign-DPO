@@ -4,15 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
 
 from mathalign_dpo.config.load_config import load_stage1_configs, output_paths, sample_counts, split_ratios
 from mathalign_dpo.data.load_numina import load_numina_dataset, normalize_rows
@@ -123,6 +117,7 @@ def build_statistics(
             "empty_counts": normalized.audit.empty_counts,
             "problem_field": normalized.audit.problem_field,
             "solution_field": normalized.audit.solution_field,
+            "source_rows_sha256": normalized.audit.source_rows_sha256,
         },
     }
 
@@ -151,6 +146,7 @@ def build_manifest(
         "split_ratios": split_ratios(configs.formal),
         "id_strategy": audit.id_strategy,
         "id_field": audit.id_field,
+        "source_rows_sha256": audit.source_rows_sha256,
         "configs": {
             "mini": str(configs.mini_path),
             "formal": str(configs.formal_path),

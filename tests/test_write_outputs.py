@@ -4,8 +4,10 @@ import json
 import tempfile
 from pathlib import Path
 import unittest
+from unittest import mock
 
-from mathalign_dpo.data.write_outputs import publish_stage1_outputs, sha256_file
+from mathalign_dpo.data import write_outputs
+from mathalign_dpo.data.write_outputs import publish_stage1_outputs, sha256_file, validate_completed_manifest
 
 
 def _row(index: int) -> dict[str, object]:
@@ -52,6 +54,7 @@ class WriteOutputsTests(unittest.TestCase):
             self.assertEqual(manifest["files"]["train"]["rows"], 1)
             self.assertEqual(manifest["files"]["train"]["sha256"], sha256_file(paths["train"]))
             self.assertFalse(published.staging_dir.exists())
+            validate_completed_manifest(paths["manifest"])
 
     def test_existing_outputs_fail_without_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -91,3 +94,93 @@ class WriteOutputsTests(unittest.TestCase):
 
             self.assertFalse(paths["manifest"].exists())
             self.assertFalse((tmp_path / ".stage_test").exists())
+
+    def test_overwrite_staging_write_failure_preserves_old_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(Path(tmp))
+            self._publish_old_outputs(paths)
+            before = _snapshot(paths)
+
+            def failing_write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
+                if path.name == "normalized_validation.jsonl":
+                    raise OSError("injected staging write failure")
+                write_outputs._write_jsonl_original(path, rows)
+
+            write_outputs._write_jsonl_original = write_outputs._write_jsonl
+            try:
+                with mock.patch.object(write_outputs, "_write_jsonl", side_effect=failing_write_jsonl):
+                    with self.assertRaisesRegex(OSError, "injected"):
+                        publish_stage1_outputs(
+                            canonical={"train": [_row(10)], "validation": [_row(20)], "evaluation": [_row(30)]},
+                            statistics={"schema_version": "1.0", "stage": 1, "version": "new"},
+                            manifest={"schema_version": "1.0", "stage": 1, "completed": False, "version": "new"},
+                            output_paths=paths,
+                            overwrite=True,
+                            run_id="new",
+                        )
+            finally:
+                delattr(write_outputs, "_write_jsonl_original")
+
+            self.assertEqual(before, _snapshot(paths))
+            self.assertFalse((paths["manifest"].parent / ".stage_new").exists())
+
+    def test_overwrite_staging_validation_failure_preserves_old_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(Path(tmp))
+            self._publish_old_outputs(paths)
+            before = _snapshot(paths)
+
+            with mock.patch.object(write_outputs, "_count_jsonl_rows", return_value=999):
+                with self.assertRaisesRegex(ValueError, "row count mismatch"):
+                    publish_stage1_outputs(
+                        canonical={"train": [_row(10)], "validation": [_row(20)], "evaluation": [_row(30)]},
+                        statistics={"schema_version": "1.0", "stage": 1, "version": "new"},
+                        manifest={"schema_version": "1.0", "stage": 1, "completed": False, "version": "new"},
+                        output_paths=paths,
+                        overwrite=True,
+                        run_id="new",
+                    )
+
+            self.assertEqual(before, _snapshot(paths))
+            self.assertFalse((paths["manifest"].parent / ".stage_new").exists())
+
+    def test_overwrite_publish_failure_rolls_back_old_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(Path(tmp))
+            self._publish_old_outputs(paths)
+            before = _snapshot(paths)
+
+            def failing_replace(source: Path, target: Path) -> None:
+                source_path = Path(source)
+                if source_path.name == "normalized_validation.jsonl" and source_path.parent.name != "backup":
+                    raise OSError("injected publish failure")
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+                source_path.replace(target)
+
+            with self.assertRaisesRegex(OSError, "injected"):
+                publish_stage1_outputs(
+                    canonical={"train": [_row(10)], "validation": [_row(20)], "evaluation": [_row(30)]},
+                    statistics={"schema_version": "1.0", "stage": 1, "version": "new"},
+                    manifest={"schema_version": "1.0", "stage": 1, "completed": False, "version": "new"},
+                    output_paths=paths,
+                    overwrite=True,
+                    run_id="new",
+                    replace_file=failing_replace,
+                )
+
+            self.assertEqual(before, _snapshot(paths))
+            validate_completed_manifest(paths["manifest"])
+
+    def _publish_old_outputs(self, paths: dict[str, Path]) -> None:
+        publish_stage1_outputs(
+            canonical={"train": [_row(1)], "validation": [_row(2)], "evaluation": [_row(3)]},
+            statistics={"schema_version": "1.0", "stage": 1, "version": "old"},
+            manifest={"schema_version": "1.0", "stage": 1, "completed": False, "version": "old"},
+            output_paths=paths,
+            overwrite=False,
+            run_id="old",
+        )
+
+
+def _snapshot(paths: dict[str, Path]) -> dict[str, tuple[str, str]]:
+    return {name: (path.read_text(encoding="utf-8"), sha256_file(path)) for name, path in paths.items()}

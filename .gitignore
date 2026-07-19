@@ -7,5 +7,9 @@ wandb/
 .cache/
 __pycache__/
 .pytest_cache/
+*.egg-info/
 *.pyc
 .DS_Store
+mathalign_dpo.egg-info/
+tests/
+tests/__pycache__/

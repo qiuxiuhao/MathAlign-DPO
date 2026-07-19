@@ -14,6 +14,9 @@ from typing import Any, Mapping
 from mathalign_dpo.data.load_numina import validate_normalized_example
 
 
+Publisher = Any
+
+
 @dataclass(frozen=True)
 class PublishedOutputs:
     """Final paths and hashes from a successful Stage 1 publish."""
@@ -31,6 +34,7 @@ def publish_stage1_outputs(
     output_paths: Mapping[str, Path],
     overwrite: bool,
     run_id: str | None = None,
+    replace_file: Publisher = os.replace,
 ) -> PublishedOutputs:
     """Write Stage 1 outputs through a staging directory and publish atomically."""
 
@@ -70,32 +74,44 @@ def publish_stage1_outputs(
         _write_json(staged_paths["statistics"], stats_payload)
         hashes["statistics"] = sha256_file(staged_paths["statistics"])
 
-        manifest_payload = dict(manifest)
-        manifest_payload["completed"] = True
-        manifest_payload["files"] = {
-            split: {
-                "path": str(final_paths[split]),
-                "rows": counts[split],
-                "sha256": hashes[split],
-            }
-            for split in ("train", "validation", "evaluation")
-        }
-        manifest_payload["statistics_file"] = {
-            "path": str(final_paths["statistics"]),
-            "sha256": hashes["statistics"],
-        }
+        manifest_payload = _build_manifest_payload(manifest, final_paths, counts, hashes)
         _write_json(staged_paths["manifest"], manifest_payload)
         hashes["manifest"] = sha256_file(staged_paths["manifest"])
+        _validate_staged_outputs(staged_paths, manifest_payload)
 
         output_root.mkdir(parents=True, exist_ok=True)
-        for name, final_path in final_paths.items():
-            final_path.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(staged_paths[name], final_path)
+        _publish_with_rollback(staged_paths, final_paths, staging_dir, replace_file)
         shutil.rmtree(staging_dir)
         return PublishedOutputs(paths=final_paths, hashes=hashes, counts=counts, staging_dir=staging_dir)
     except BaseException:
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise
+
+
+def validate_completed_manifest(manifest_path: Path) -> None:
+    """Validate that a published Stage 1 manifest points to complete outputs."""
+
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    if manifest.get("completed") is not True:
+        raise ValueError(f"Manifest is not completed: {manifest_path}")
+    for split, file_info in manifest.get("files", {}).items():
+        path = Path(str(file_info["path"]))
+        if not path.exists():
+            raise ValueError(f"Manifest file is missing for {split}: {path}")
+        rows = _count_jsonl_rows(path)
+        if rows != int(file_info["rows"]):
+            raise ValueError(f"Manifest row count mismatch for {split}: expected {file_info['rows']}, got {rows}")
+        digest = sha256_file(path)
+        if digest != file_info["sha256"]:
+            raise ValueError(f"Manifest sha256 mismatch for {split}: {path}")
+
+    statistics_info = manifest.get("statistics_file", {})
+    statistics_path = Path(str(statistics_info.get("path", "")))
+    if not statistics_path.exists():
+        raise ValueError(f"Manifest statistics file is missing: {statistics_path}")
+    if sha256_file(statistics_path) != statistics_info.get("sha256"):
+        raise ValueError(f"Manifest statistics sha256 mismatch: {statistics_path}")
 
 
 def sha256_file(path: Path) -> str:
@@ -119,3 +135,94 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True)
         handle.write("\n")
+
+
+def _build_manifest_payload(
+    manifest: Mapping[str, Any],
+    final_paths: Mapping[str, Path],
+    counts: Mapping[str, int],
+    hashes: Mapping[str, str],
+) -> dict[str, Any]:
+    payload = dict(manifest)
+    payload["completed"] = True
+    payload["files"] = {
+        split: {
+            "path": str(final_paths[split]),
+            "rows": counts[split],
+            "sha256": hashes[split],
+        }
+        for split in ("train", "validation", "evaluation")
+    }
+    payload["statistics_file"] = {
+        "path": str(final_paths["statistics"]),
+        "sha256": hashes["statistics"],
+    }
+    return payload
+
+
+def _validate_staged_outputs(staged_paths: Mapping[str, Path], manifest: Mapping[str, Any]) -> None:
+    for split, file_info in manifest["files"].items():
+        staged_path = staged_paths[split]
+        rows = _count_jsonl_rows(staged_path)
+        if rows != int(file_info["rows"]):
+            raise ValueError(f"Staged row count mismatch for {split}: expected {file_info['rows']}, got {rows}")
+        digest = sha256_file(staged_path)
+        if digest != file_info["sha256"]:
+            raise ValueError(f"Staged sha256 mismatch for {split}: {staged_path}")
+    statistics_path = staged_paths["statistics"]
+    if sha256_file(statistics_path) != manifest["statistics_file"]["sha256"]:
+        raise ValueError(f"Staged statistics sha256 mismatch: {statistics_path}")
+
+
+def _count_jsonl_rows(path: Path) -> int:
+    count = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                raise ValueError(f"Blank JSONL line in {path}: line {line_number}")
+            json.loads(line)
+            count += 1
+    return count
+
+
+def _publish_with_rollback(
+    staged_paths: Mapping[str, Path],
+    final_paths: Mapping[str, Path],
+    staging_dir: Path,
+    replace_file: Publisher,
+) -> None:
+    backup_dir = staging_dir / "backup"
+    backup_dir.mkdir()
+    backups: dict[str, Path] = {}
+    existed: dict[str, bool] = {}
+    publish_order = ("train", "validation", "evaluation", "statistics", "manifest")
+    for name in publish_order:
+        final_path = final_paths[name]
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        existed[name] = final_path.exists()
+        if final_path.exists():
+            backup_path = backup_dir / final_path.name
+            shutil.copy2(final_path, backup_path)
+            backups[name] = backup_path
+
+    try:
+        for name in publish_order:
+            replace_file(staged_paths[name], final_paths[name])
+    except BaseException:
+        _rollback_publish(final_paths, backups, existed, publish_order, replace_file)
+        raise
+
+
+def _rollback_publish(
+    final_paths: Mapping[str, Path],
+    backups: Mapping[str, Path],
+    existed: Mapping[str, bool],
+    publish_order: tuple[str, ...],
+    replace_file: Publisher,
+) -> None:
+    for name in reversed(publish_order):
+        final_path = final_paths[name]
+        if existed[name]:
+            replace_file(backups[name], final_path)
+        elif final_path.exists():
+            final_path.unlink()
