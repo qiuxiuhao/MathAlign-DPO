@@ -10,6 +10,7 @@ project:
 
 model:
   name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+  revision: 7ae557604adf67be50417f59c2c2f167def9a775
   trust_remote_code: false
   torch_dtype: float16
   max_length: 512

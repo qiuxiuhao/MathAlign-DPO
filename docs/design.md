@@ -384,7 +384,12 @@ Stage 3 训练输出目录为：
 config.sft.output_dir/<run_id>
 ```
 
-显式传入的非空输出目录必须使用 `--overwrite` 才能替换。每次运行至少保存：
+显式传入的非空输出目录必须使用 `--overwrite` 才能替换。即使启用
+`--overwrite`，新训练也必须先写入隐藏 staging 目录；只有训练、显式 eval、
+adapter 保存、tokenizer 保存、metadata 写入和 adapter reload 推理都成功后，
+才允许事务式发布到最终目录。失败时旧目录必须保持不变。
+
+每次成功运行至少保存：
 
 ```text
 final_adapter/
@@ -395,6 +400,14 @@ loss_history.jsonl
 run_metadata.json
 adapter_reload_samples.jsonl
 ```
+
+Stage 3 metadata 必须记录原始配置路径、runtime overrides、实际生效的
+`effective_config`、固定模型 revision、resolved revision、候选池数量、
+长度过滤数量、最终实际训练数量、`max_length` 和样本选择 hash。
+
+Mini SFT 正式运行要求 tokenizer 过滤后实际训练样本数为 256。若 Stage 2
+Mini SFT view 在 `max_length = 512` 下不足 256，允许从 Stage 2 formal SFT
+view 按确定性候选池扩展并稳定 rank 选择；禁止随机补样本，禁止截断正确解答。
 
 ### 5.9 DPO 训练
 

@@ -348,16 +348,21 @@ prompt/completion 对话格式：
   "token_statistics": {
     "max_length": 512,
     "train": {
-      "input_count": 253,
-      "kept_count": 240,
-      "filtered_count": 13,
-      "filtered_ids": []
+      "candidate_count": 4932,
+      "kept_count": 2653,
+      "filtered_count": 2279,
+      "final_count": 256,
+      "selected_pool": "expanded",
+      "selection_hash": "..."
     }
   }
 }
 ```
 
 禁止对超长样本做静默截断。
+
+Mini SFT 正式训练必须在 tokenizer 过滤后选择实际 256 条训练样本。选择过程
+必须记录候选数量、长度过滤数量、最终数量、`max_length` 和样本选择 hash。
 
 ---
 

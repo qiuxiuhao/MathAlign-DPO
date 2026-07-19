@@ -11,5 +11,4 @@ __pycache__/
 *.pyc
 .DS_Store
 mathalign_dpo.egg-info/
-tests/
 tests/__pycache__/

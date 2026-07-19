@@ -9,6 +9,7 @@ import platform
 import resource
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,8 +54,8 @@ def build_run_id(stage: str, smoke_test: bool) -> str:
     """Build a timestamped run ID."""
 
     suffix = "smoke" if smoke_test else "mini"
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"{timestamp}_stage3_{stage}_{suffix}"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"{timestamp}_stage3_{stage}_{suffix}_{uuid.uuid4().hex[:8]}"
 
 
 def collect_base_metadata(
@@ -62,19 +63,26 @@ def collect_base_metadata(
     config_path: str | Path,
     output_dir: str | Path,
     run_id: str,
+    stage_number: int,
+    training_stage: str,
+    run_mode: str,
     smoke_test: bool,
+    runtime_overrides: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Collect metadata available before training starts."""
 
     return {
         "schema_version": "1.0",
-        "stage": 3,
-        "training_stage": "sft",
+        "stage": int(stage_number),
+        "training_stage": str(training_stage),
         "status": "running",
         "run_id": run_id,
+        "run_mode": str(run_mode),
         "smoke_test": bool(smoke_test),
-        "config_path": str(config_path),
+        "original_config_path": str(config_path),
         "output_dir": str(output_dir),
+        "effective_config": dict(config),
+        "runtime_overrides": dict(runtime_overrides),
         "project": dict(config["project"]),
         "model": dict(config["model"]),
         "runtime": dict(config["runtime"]),

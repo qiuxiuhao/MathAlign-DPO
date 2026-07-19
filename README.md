@@ -2,10 +2,10 @@
 
 一套面向数学推理的、可在 Mac M5 24GB 上运行 Mini 全链路，并在 RTX 4090 24GB 上完成正式实验的轻量级后训练项目。
 
-> **当前状态：Stage 3 — Mini SFT 已完成。**  
-> Mini SFT 已在 MPS FP16 LoRA 下完成 smoke 和约 30 steps 小规模训练，
-> 并保存/重载了 adapter。DPO 训练、Base/SFT/DPO 统一评测和消融实验仍为
-> Planned。
+> **当前状态：Stage 3 — Mini SFT 收尾修复已实现，等待 MPS 重跑验收。**  
+> Stage 3 已支持事务式输出发布、固定模型 revision、effective config 元数据、
+> tokenizer 过滤后精确 256 条 Mini SFT 选择、显式 eval 和 adapter/tokenizer
+> 重载验证。DPO 训练、Base/SFT/DPO 统一评测和消融实验仍为 Planned。
 
 ---
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
@@ -23,6 +24,18 @@ class SFTDataBundle:
     validation_rows: list[dict[str, Any]]
     manifest: dict[str, Any]
     selected_counts: dict[str, int]
+
+
+@dataclass(frozen=True)
+class SFTCandidatePools:
+    """Initial Mini and expanded formal SFT candidate pools."""
+
+    train_initial_rows: list[dict[str, Any]]
+    validation_initial_rows: list[dict[str, Any]]
+    train_expanded_rows: list[dict[str, Any]]
+    validation_expanded_rows: list[dict[str, Any]]
+    manifest: dict[str, Any]
+    candidate_counts: dict[str, dict[str, int]]
 
 
 @dataclass(frozen=True)
@@ -64,6 +77,40 @@ def load_sft_data(
         validation_rows=selected["validation"],
         manifest=manifest,
         selected_counts=selected_counts,
+    )
+
+
+def load_sft_candidate_pools(config: Mapping[str, Any]) -> SFTCandidatePools:
+    """Load initial Mini and deterministic expanded formal SFT candidate pools."""
+
+    manifest_path = Path(str(config["data"]["stage2_manifest_file"]))
+    manifest = load_and_validate_stage2_manifest(manifest_path)
+    views = manifest.get("views", {})
+    run_mode = str(config["project"]["run_mode"])
+    if run_mode not in views:
+        raise ValueError(f"Stage 2 manifest does not contain {run_mode!r} views: {manifest_path}")
+    if "formal" not in views:
+        raise ValueError(f"Stage 2 manifest does not contain formal views: {manifest_path}")
+
+    pools: dict[str, dict[str, list[dict[str, Any]]]] = {"initial": {}, "expanded": {}}
+    counts: dict[str, dict[str, int]] = {}
+    for split in SFT_SPLITS:
+        all_rows = _load_and_validate_manifest_file(manifest, split)
+        initial_ids = list(views[run_mode]["sft"][split])
+        expanded_ids = list(views["formal"]["sft"][split])
+        pools["initial"][split] = _select_manifest_rows(all_rows, initial_ids, split)
+        pools["expanded"][split] = _select_manifest_rows(all_rows, expanded_ids, split)
+        counts[split] = {
+            "initial": len(pools["initial"][split]),
+            "expanded": len(pools["expanded"][split]),
+        }
+    return SFTCandidatePools(
+        train_initial_rows=pools["initial"]["train"],
+        validation_initial_rows=pools["initial"]["validation"],
+        train_expanded_rows=pools["expanded"]["train"],
+        validation_expanded_rows=pools["expanded"]["validation"],
+        manifest=manifest,
+        candidate_counts=counts,
     )
 
 
@@ -118,6 +165,53 @@ def tokenize_and_filter_sft_data(
             "validation": validation_stats,
         },
     )
+
+
+def select_tokenized_sft_data(
+    candidate_pools: SFTCandidatePools,
+    tokenizer: Any,
+    max_length: int,
+    seed: int,
+    target_train_count: int,
+    target_validation_count: int,
+) -> TokenizedSFTData:
+    """Filter candidate pools by true token length and select exact target counts."""
+
+    train_rows, train_stats = _filter_rank_and_select_split(
+        initial_rows=candidate_pools.train_initial_rows,
+        expanded_rows=candidate_pools.train_expanded_rows,
+        tokenizer=tokenizer,
+        max_length=max_length,
+        seed=seed,
+        split="train",
+        target_count=target_train_count,
+    )
+    validation_rows, validation_stats = _filter_rank_and_select_split(
+        initial_rows=candidate_pools.validation_initial_rows,
+        expanded_rows=candidate_pools.validation_expanded_rows,
+        tokenizer=tokenizer,
+        max_length=max_length,
+        seed=seed,
+        split="validation",
+        target_count=target_validation_count,
+    )
+    return TokenizedSFTData(
+        train_rows=train_rows,
+        validation_rows=validation_rows,
+        token_statistics={
+            "max_length": int(max_length),
+            "train": train_stats,
+            "validation": validation_stats,
+        },
+    )
+
+
+def assert_rows_within_max_length(rows: Sequence[Mapping[str, Any]], max_length: int, label: str) -> None:
+    """Fail if any selected row exceeds the configured token length."""
+
+    too_long = [str(row["id"]) for row in rows if int(row["token_count"]) > max_length]
+    if too_long:
+        raise ValueError(f"{label} rows exceed max_length={max_length}: {too_long[:3]}")
 
 
 def validate_tokenizer_chat_template(tokenizer: Any) -> dict[str, Any]:
@@ -245,6 +339,63 @@ def _convert_and_filter_split(
         else:
             filtered_ids.append(str(row["id"]))
     return converted, _token_stats(len(rows), converted, filtered_ids, token_counts)
+
+
+def _filter_rank_and_select_split(
+    initial_rows: Sequence[Mapping[str, Any]],
+    expanded_rows: Sequence[Mapping[str, Any]],
+    tokenizer: Any,
+    max_length: int,
+    seed: int,
+    split: str,
+    target_count: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    initial_kept, initial_stats = _convert_and_filter_split(initial_rows, tokenizer, max_length)
+    selected_pool_name = "initial"
+    pool_rows = list(initial_rows)
+    eligible_rows = initial_kept
+    pool_stats = initial_stats
+    if len(initial_kept) < target_count:
+        selected_pool_name = "expanded"
+        pool_rows = list(expanded_rows)
+        eligible_rows, pool_stats = _convert_and_filter_split(expanded_rows, tokenizer, max_length)
+    if len(eligible_rows) < target_count:
+        raise ValueError(
+            f"Not enough {split} SFT rows after token filtering at max_length={max_length}: "
+            f"needed {target_count}, got {len(eligible_rows)}"
+        )
+    ranked = sorted(eligible_rows, key=lambda row: (_stable_rank(seed, split, str(row["id"])), str(row["id"])))
+    selected = ranked[:target_count]
+    assert_rows_within_max_length(selected, max_length, f"selected {split}")
+    stats = dict(pool_stats)
+    stats.update(
+        {
+            "target_count": int(target_count),
+            "final_count": len(selected),
+            "selected_pool": selected_pool_name,
+            "initial_candidate_count": len(initial_rows),
+            "initial_kept_count": len(initial_kept),
+            "expanded_candidate_count": len(expanded_rows),
+            "expanded_used": selected_pool_name == "expanded",
+            "candidate_count": len(pool_rows),
+            "length_filtered_count": int(stats["filtered_count"]),
+            "selection_hash": selection_hash(selected),
+            "selected_ids": [str(row["id"]) for row in selected],
+        }
+    )
+    return selected, stats
+
+
+def selection_hash(rows: Sequence[Mapping[str, Any]]) -> str:
+    """Hash selected row IDs in final training order."""
+
+    payload = "\n".join(str(row["id"]) for row in rows)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _stable_rank(seed: int, split: str, row_id: str) -> str:
+    payload = f"{seed}|sft|{split}|{row_id}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _token_stats(

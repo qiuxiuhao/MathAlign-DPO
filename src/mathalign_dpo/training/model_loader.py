@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -23,9 +24,18 @@ def load_tokenizer(config: Mapping[str, Any]) -> Any:
     transformers = importlib.import_module("transformers")
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         str(config["model"]["name_or_path"]),
+        revision=str(config["model"]["revision"]),
         trust_remote_code=bool(config["model"]["trust_remote_code"]),
     )
     return tokenizer
+
+
+def model_revision_metadata(config: Mapping[str, Any]) -> dict[str, str]:
+    """Return configured and resolved model revision metadata."""
+
+    configured = str(config["model"]["revision"])
+    resolved = configured if re.fullmatch(r"[0-9a-f]{40}", configured) else configured
+    return {"configured_revision": configured, "resolved_revision": resolved}
 
 
 def load_model_and_tokenizer(config: Mapping[str, Any], training_stage: str = "sft") -> LoadedModelAndTokenizer:
@@ -77,7 +87,8 @@ def _load_mps_model(config: Mapping[str, Any], torch: Any, transformers: Any, pe
     dtype = _torch_dtype(torch, str(config["model"]["torch_dtype"]))
     model = transformers.AutoModelForCausalLM.from_pretrained(
         str(config["model"]["name_or_path"]),
-        torch_dtype=dtype,
+        revision=str(config["model"]["revision"]),
+        dtype=dtype,
         trust_remote_code=bool(config["model"]["trust_remote_code"]),
         low_cpu_mem_usage=True,
     )
@@ -91,6 +102,7 @@ def _load_mps_model(config: Mapping[str, Any], torch: Any, transformers: Any, pe
         "quantization": "none",
         "lora": _lora_metadata(config),
         "device": "mps",
+        "model_revision": model_revision_metadata(config),
     }
 
 
@@ -109,6 +121,7 @@ def _load_cuda_model(config: Mapping[str, Any], torch: Any, transformers: Any, p
     )
     model = transformers.AutoModelForCausalLM.from_pretrained(
         str(config["model"]["name_or_path"]),
+        revision=str(config["model"]["revision"]),
         quantization_config=quantization_config,
         device_map={"": 0},
         trust_remote_code=bool(config["model"]["trust_remote_code"]),
@@ -127,6 +140,7 @@ def _load_cuda_model(config: Mapping[str, Any], torch: Any, transformers: Any, p
         "quantization": "nf4_4bit",
         "lora": _lora_metadata(config),
         "device": "cuda",
+        "model_revision": model_revision_metadata(config),
     }
 
 

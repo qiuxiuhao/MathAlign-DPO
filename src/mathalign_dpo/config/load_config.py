@@ -177,6 +177,8 @@ def _validate_single_config(config: dict[str, Any], path: Path, expected_mode: s
         raise ValueError(f"{path}: lora.target_modules must be a non-empty list")
     if int(model.get("max_length", 0)) <= 0:
         raise ValueError(f"{path}: model.max_length must be positive")
+    if not isinstance(model.get("revision"), str) or not model["revision"].strip():
+        raise ValueError(f"{path}: model.revision must pin a non-empty commit revision")
     if int(sft.get("max_steps", 0)) <= 0:
         raise ValueError(f"{path}: sft.max_steps must be positive")
     if int(sft.get("adapter_reload_samples", 0)) <= 0:

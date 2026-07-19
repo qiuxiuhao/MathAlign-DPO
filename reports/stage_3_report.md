@@ -2,25 +2,31 @@
 
 ## Implemented
 
-- Created `plans/stage_3.md`.
-- Added Stage 3 SFT data validation for completed Stage 2 manifest, Stage 1
-  manifest hash reference, SFT JSONL row counts, sha256 values, Mini SFT views,
-  unique IDs, message roles, non-empty content, and `token_count: null`.
-- Added tokenizer chat-template validation and true token length filtering with
-  no truncation.
-- Added shared model/tokenizer loader with separate MPS FP16 LoRA and CUDA NF4
-  QLoRA branches.
-- Added MPS backend preflight that rejects unavailable MPS and
-  `PYTORCH_ENABLE_MPS_FALLBACK=1`.
-- Added TRL `SFTTrainer` orchestration, output directory collision protection,
-  smoke overrides, adapter saving, tokenizer saving, trainer state, metrics,
-  loss history, runtime metadata, and adapter reload sanity generation.
-- Added Stage 3 CLI: `python -m scripts.train_sft`.
-- Added Stage 3 tests for SFT data validation, token filtering, model loader
-  branching, runtime metadata, CLI behavior, and config compatibility.
-- Updated configs with adapter reload settings.
-- Updated docs and README for Stage 3 SFT behavior and commands.
-- Added training dependencies to `requirements.txt`, excluding `bitsandbytes`.
+- Implemented Mini SFT with TRL `SFTTrainer`, MPS FP16 LoRA, tokenizer length
+  filtering, adapter save/reload validation, and runtime metadata.
+- Added Stage 3 closeout repairs:
+  - effective config is built before metadata collection;
+  - metadata records `effective_config`, `original_config_path`, run mode,
+    smoke state, and runtime overrides;
+  - smoke metadata now records effective `sft.max_steps = 10`, not the original
+    Mini `30`;
+  - output writes now go to a hidden staging directory and publish only after
+    training, explicit evaluation, adapter save, tokenizer save, metadata, and
+    adapter reload validation all succeed;
+  - failed staging runs preserve old published output directories;
+  - both Qwen model configs pin real Hugging Face commit revisions;
+  - model, tokenizer, and adapter reload model loading all pass the configured
+    revision;
+  - Mini SFT selection now filters by true tokenizer length first, expands from
+    the Stage 2 Mini view to the deterministic formal Stage 2 candidate pool
+    when needed, ranks by stable hash, and selects the exact configured target;
+  - Trainer tokenized input lengths are asserted to be no greater than
+    `model.max_length`;
+  - train metrics and explicit post-train eval metrics are saved separately;
+  - adapter reload uses the tokenizer saved in the current output directory;
+  - run IDs include microseconds and a short UUID to avoid same-second
+    collisions;
+  - CUDA QLoRA loader order is quantized load, k-bit preparation, then LoRA.
 
 ## Files Added
 
@@ -40,14 +46,23 @@
 ## Files Modified
 
 - `README.md`
+- `.gitignore`
 - `configs/qwen25_0_5b_m5_24gb_mini.yaml`
 - `configs/qwen25_3b_4090.yaml`
 - `docs/data_contract.md`
 - `docs/design.md`
 - `requirements.txt`
 - `src/mathalign_dpo/config/load_config.py`
+- `src/mathalign_dpo/training/model_loader.py`
+- `src/mathalign_dpo/training/runtime_metadata.py`
+- `src/mathalign_dpo/training/sft_data.py`
+- `src/mathalign_dpo/training/train_sft.py`
 - `tests/test_config.py`
+- `tests/test_model_loader.py`
 - `tests/test_packaging.py`
+- `tests/test_runtime_metadata.py`
+- `tests/test_sft_data.py`
+- `tests/test_train_sft_cli.py`
 
 ## Commands Executed
 
@@ -58,22 +73,14 @@
 - `conda run -n mathalign-dpo python -m pytest tests/test_config.py tests/test_model_loader.py tests/test_train_sft_cli.py -q`
 - `conda run -n mathalign-dpo python -m pip check`
 - `conda run -n mathalign-dpo python -c "... package version check ..."`
-- `conda run -n mathalign-dpo python -c "... MPS availability check ..."`
-- `conda run -n mathalign-dpo python -c "... Stage 2 Mini SFT validation ..."`
-- `conda run -n mathalign-dpo python -c "... Qwen tokenizer token length validation ..."`
+- `conda run -n mathalign-dpo python -c "... Hugging Face model revision lookup ..."`
+- `conda run -n mathalign-dpo python -c "... Stage 2 Mini SFT candidate validation and Qwen tokenizer length selection ..."`
 - `conda run -n mathalign-dpo python -m scripts.train_sft --config configs/qwen25_0_5b_m5_24gb_mini.yaml --smoke-test --output-dir outputs/checkpoints/mini/sft_smoke --overwrite`
-- `python -m scripts.train_sft --config configs/qwen25_0_5b_m5_24gb_mini.yaml --smoke-test --output-dir outputs/checkpoints/mini/sft_smoke --overwrite`
-- `python -m scripts.train_sft --config configs/qwen25_0_5b_m5_24gb_mini.yaml`
 
 ## Test Results
 
-- Unit tests before training dependency install: `67 passed`.
-- Unit tests after training dependency install and MPS metadata fix:
-  `67 passed`.
-- Unit tests after TrainerState compatibility fix: `68 passed`.
-- Focused Stage 3/formal compatibility tests: `13 passed`.
+- Unit tests after closeout repairs: `73 passed`.
 - CLI help: succeeded.
-- Editable install: succeeded.
 - Dependency check: no broken requirements found.
 - Installed versions:
   - `torch`: `2.13.0`
@@ -84,91 +91,91 @@
   - `datasets`: `5.0.0`
   - `safetensors`: `0.8.0`
   - `psutil`: `7.2.2`
-- TRL API check:
-  - `SFTConfig.completion_only_loss`: present
-  - `SFTConfig.eval_strategy`: present
-  - `SFTTrainer.processing_class`: present
+- Added tests cover:
+  - effective smoke overrides before metadata;
+  - staging publish preserving old output until success;
+  - failed staging leaving old output unchanged;
+  - 511/512/513 token length boundaries;
+  - exact target selection after expanded candidate pool;
+  - TrainerState `save_to_json()` compatibility;
+  - separate train/eval metric files;
+  - model revision presence in both configs.
 
 ## Data And Tokenizer Results
 
-- Stage 2 Mini SFT selected rows before tokenizer filtering:
-  - train: 253
-  - validation: 32
+- Model revisions:
+  - `Qwen/Qwen2.5-0.5B-Instruct`:
+    `7ae557604adf67be50417f59c2c2f167def9a775`
+  - `Qwen/Qwen2.5-3B-Instruct`:
+    `aa8e72537993ba99e69dfaafa59ed015b17504d1`
 - Qwen tokenizer chat template: present.
 - Qwen tokenizer pad token before/after validation: `<|endoftext|>`.
-- Full Mini SFT token filtering at `model.max_length = 512`:
-  - train input: 253
-  - train kept: 135
-  - train filtered: 118
-  - validation input: 32
-  - validation kept: 16
-  - validation filtered: 16
-- Smoke SFT token filtering at `model.max_length = 512`:
-  - train input: 64
-  - train kept: 38
-  - train filtered: 26
-  - validation input: 16
-  - validation kept: 7
-  - validation filtered: 9
+- Revised Mini SFT selection at `max_length = 512`:
+  - train initial Mini candidates: 253
+  - train expanded candidates: 4932
+  - train kept after length filtering in expanded pool: 2653
+  - train length filtered in expanded pool: 2279
+  - final actual train rows: 256
+  - train selected pool: expanded
+  - train selection hash:
+    `4e8df248e02ce5da407ef15ff9cae735583ff288b7c8dd88a36180565759298b`
+  - validation initial Mini candidates: 32
+  - validation expanded candidates: 198
+  - validation kept after length filtering in expanded pool: 103
+  - validation length filtered in expanded pool: 95
+  - final actual validation rows: 32
+  - validation selected pool: expanded
+  - validation selection hash:
+    `43ec6b9a43e0ae99889ab0bbe9046da860bfea4b15dbdb45f4368bb04eb18f17`
+- `max_length = 512` is sufficient for exactly 256 Mini SFT training rows; no
+  change to 768 is required.
 
-## MPS SFT Results
+## MPS Run Results
 
-- Smoke SFT completed on MPS:
-  - run ID: `20260719T155230Z_stage3_sft_smoke`
-  - output dir: `outputs/checkpoints/mini/sft_smoke`
-  - selected rows: train 64, validation 16
-  - after token filtering: train 38, validation 7
-  - max steps: 10
-  - train loss: `0.6184526562690735`
-  - train runtime: `15.8653` seconds
-  - elapsed seconds: `39.056`
-  - peak process memory: `2379.922 MB`
-  - adapter reload samples: saved
-- Mini SFT completed on MPS:
+- Previous Stage 3 Mini SFT run completed before closeout repairs:
   - run ID: `20260719T155319Z_stage3_sft_mini`
-  - output dir: `outputs/checkpoints/mini/sft/20260719T155319Z_stage3_sft_mini`
   - selected rows: train 253, validation 32
   - after token filtering: train 135, validation 16
-  - max steps: 30
   - train loss: `0.5606042861938476`
-  - train runtime: `50.1009` seconds
-  - train samples/sec: `2.395`
-  - train steps/sec: `0.599`
   - elapsed seconds: `73.128`
   - peak process memory: `2364.25 MB`
-  - final adapter: `outputs/checkpoints/mini/sft/20260719T155319Z_stage3_sft_mini/final_adapter`
-  - adapter reload samples: `outputs/checkpoints/mini/sft/20260719T155319Z_stage3_sft_mini/adapter_reload_samples.jsonl`
-- MPS preflight was measured as:
+- That previous run is not accepted as final for the revised closeout because it
+  trained on 135 rows after token filtering, not the required 256 rows.
+- The Codex tool execution context for the closeout repair reports:
   - `torch.backends.mps.is_built() = True`
-  - `torch.backends.mps.is_available() = True`
-- A Transformers warning was printed during reload generation:
-  `temperature`, `top_p`, and `top_k` generation flags were not valid and may
-  be ignored. The run still completed and deterministic adapter reload samples
-  were saved.
+  - `torch.backends.mps.is_available() = False`
+- Therefore the repaired smoke and Mini SFT commands must be rerun from the
+  user's MPS-available terminal session before Stage 3 can be marked fully
+  runtime-accepted under the revised requirements.
+- A repaired smoke attempt from Codex failed before model loading and preserved
+  the old `outputs/checkpoints/mini/sft_smoke` result, confirming the new staging
+  overwrite behavior does not delete old outputs before success.
 
 ## Known Limitations
 
-- Stage 3 is a Mini training run only; it is not a formal performance result.
-- Token filtering at `max_length = 512` removed 118 of 253 Mini train rows and
-  16 of 32 Mini validation rows.
-- The first post-install full test run crashed when calling
-  `torch.mps.current_allocated_memory()`. Stage 3 now avoids `torch.mps` memory
-  counters and records process peak memory instead.
+- Revised MPS smoke and revised 256-row Mini SFT have not yet been measured in
+  this tool context because MPS is unavailable here.
+- Stage 3 remains Mini SFT only; no DPO training, Base/SFT/DPO evaluation, RTX
+  4090 formal SFT, model merge, vLLM, FlashAttention, DeepSpeed, or FSDP was
+  implemented.
+- MPS-specific memory counters are intentionally skipped because
+  `torch.mps.current_allocated_memory()` caused a real segmentation fault in the
+  local test environment; Stage 3 records process peak memory instead.
 
 ## Deviations From Plan
 
-- TRL resolved to `0.29.1`, which still satisfies the planned `trl>=0.21,<1.0`
-  range. The planned API fields were verified against the installed version.
-- PyTorch resolved to `2.13.0`, which satisfies `torch>=2.6,<3.0`.
-- MPS-specific memory counters were skipped after a real segmentation fault in
-  `torch.mps.current_allocated_memory()`.
-- The first smoke SFT run completed training but failed while writing
-  `trainer_state.json` because the installed Transformers `TrainerState` exposes
-  `save_to_json()` rather than `to_json_string()`. The code now supports both
-  APIs, and the rerun completed.
+- The revised exact-256 Mini SFT requirement required expanding beyond the
+  original Stage 2 Mini SFT view after tokenizer filtering. Expansion is
+  deterministic from the Stage 2 formal SFT view, never random.
+- The output overwrite implementation was changed from direct directory deletion
+  to staging plus publish.
+- Adapter reload now uses the just-saved tokenizer directory instead of loading
+  tokenizer files from the Hub.
 
 ## Recommended Next Stage
 
-Proceed to Stage 4 after review: Mini DPO using the Stage 2 preference data and
-the completed Stage 3 SFT adapter. Do not run RTX 4090 formal DPO until the Mini
-DPO path has completed and reported successfully.
+Do not proceed to Stage 4 yet. First rerun repaired Stage 3 smoke and repaired
+Stage 3 Mini SFT from an MPS-available terminal, verify status `completed`,
+confirm final actual train rows are 256, and update this report with measured
+train/eval loss, elapsed time, peak process memory, effective config, and reload
+results.

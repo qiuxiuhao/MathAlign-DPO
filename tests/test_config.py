@@ -39,6 +39,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIs(configs.mini["quantization"]["load_in_4bit"], False)
         self.assertEqual(configs.mini["sft"]["optimizer"], "adamw_torch")
         self.assertEqual(configs.mini["model"]["torch_dtype"], "float16")
+        self.assertRegex(configs.mini["model"]["revision"], r"^[0-9a-f]{40}$")
         self.assertIs(configs.mini["runtime"]["allow_cpu_fallback"], False)
         self.assertEqual(configs.mini["sft"]["adapter_reload_samples"], 3)
 
@@ -47,6 +48,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIs(configs.formal["quantization"]["load_in_4bit"], True)
         self.assertEqual(configs.formal["quantization"]["quant_type"], "nf4")
         self.assertEqual(configs.formal["quantization"]["compute_dtype"], "bfloat16")
+        self.assertRegex(configs.formal["model"]["revision"], r"^[0-9a-f]{40}$")
         self.assertEqual(configs.formal["sft"]["adapter_reload_samples"], 3)
 
     def test_single_config_loader_parses_approved_configs(self) -> None:
