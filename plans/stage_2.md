@@ -70,7 +70,9 @@ Modify:
 6. Build SFT examples from `success` and `partial` parsed rows.
 7. Build DPO examples from `success` parsed rows only when final answer is
    required.
-8. Select canonical formal output counts and record Mini as prefix ID subsets.
+8. Select canonical formal output counts. Mini step/SFT/DPO views must use only
+   Stage 1 manifest Mini IDs; DPO then ranks Mini candidates deterministically
+   before truncation.
 9. Write step/SFT/DPO/manual-review outputs, Stage 2 statistics, and manifest
    extension to a staging directory.
 10. Validate schema, counts, and sha256, then publish with rollback.
@@ -144,4 +146,5 @@ python -m scripts.build_stage2_data \
   views.
 - `reports/stage_2_report.md` records commands, counts, parse/mutation stats,
   output hashes, limitations, and deviations.
+- Mini source views are validated against Stage 1 Mini and formal ID sets.
 - Work stops after Stage 2 and waits for review.

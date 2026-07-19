@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from mathalign_dpo.config.load_config import load_stage1_configs, output_paths, sample_counts, split_ratios
+from mathalign_dpo.config.load_config import load_project_configs, output_paths, sample_counts, split_ratios
 from mathalign_dpo.data.load_numina import load_numina_dataset, normalize_rows
 from mathalign_dpo.data.split_normalized import split_examples
 from mathalign_dpo.data.write_outputs import publish_stage1_outputs
@@ -42,7 +42,7 @@ def prepare_data(
 ) -> dict[str, Any]:
     """Run Stage 1 preparation and publish normalized outputs."""
 
-    configs = load_stage1_configs(mini_config, formal_config)
+    configs = load_project_configs(mini_config, formal_config)
     rows = list(load_numina_dataset(configs.dataset_name, configs.dataset_revision, configs.source_split))
     if smoke_test:
         needed = _smoke_source_rows(configs.formal)

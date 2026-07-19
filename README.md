@@ -2,8 +2,8 @@
 
 一套面向数学推理的、可在 Mac M5 24GB 上运行 Mini 全链路，并在 RTX 4090 24GB 上完成正式实验的轻量级后训练项目。
 
-> **当前状态：Stage 1 — NuminaMath 标准化与确定性划分实现中。**  
-> 当前只实现数据准备基础链路；SFT、DPO 和评测仍为 Planned，没有任何训练或评测实测结果。
+> **当前状态：Stage 2 — 步骤拆分、SFT 样本与 DPO 偏好数据构造已完成。**  
+> Stage 3 Mini SFT 待开始；模型训练、DPO 训练、评测和消融实验仍为 Planned，没有任何训练或评测实测结果。
 
 ---
 
@@ -318,6 +318,8 @@ python -m scripts.build_stage2_data \
 ```
 
 Stage 2 不加载 tokenizer，不计算真实 token 长度，也不训练模型。
+Stage 2 会生成独立的 `stage2_manifest.json` 和 `stage2_statistics.json`，
+不会覆盖 Stage 1 的 `split_manifest.json` 或 `data_statistics.json`。
 
 以下训练和评测接口仍为 Planned：
 
@@ -359,6 +361,8 @@ data/processed/dpo_validation.jsonl
 data/processed/eval.jsonl
 data/processed/data_statistics.json
 data/processed/split_manifest.json
+data/processed/stage2_statistics.json
+data/processed/stage2_manifest.json
 ```
 
 字段定义见：

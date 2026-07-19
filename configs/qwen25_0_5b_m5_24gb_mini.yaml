@@ -61,6 +61,8 @@ data:
   eval_file: data/processed/eval.jsonl
   statistics_file: data/processed/data_statistics.json
   split_manifest_file: data/processed/split_manifest.json
+  stage2_statistics_file: data/processed/stage2_statistics.json
+  stage2_manifest_file: data/processed/stage2_manifest.json
   manual_review_file: data/processed/manual_review_preferences.jsonl
 
 preprocessing:

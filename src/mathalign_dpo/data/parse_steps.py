@@ -17,6 +17,7 @@ class AnswerExtraction:
 
     answer: str | None
     method: str
+    confidence: str
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,8 @@ class StepParseResult:
     steps: list[str]
     final_answer: str | None
     answer_method: str
+    answer_confidence: str
+    answer_candidate: str | None
     parse_status: str
     failure_reason: str | None
 
@@ -46,6 +49,8 @@ def parse_normalized_example(example: Mapping[str, Any], minimum_steps: int) -> 
         "metadata": {
             "step_count": len(parsed.steps),
             "answer_extraction_method": parsed.answer_method,
+            "answer_confidence": parsed.answer_confidence,
+            "answer_candidate": parsed.answer_candidate,
             "parse_failure_reason": parsed.failure_reason,
         },
     }
@@ -68,10 +73,12 @@ def parse_solution(solution: str, minimum_steps: int) -> StepParseResult:
             break
 
     if not steps:
-        return StepParseResult([], None, answer.method, "failed", "insufficient_steps")
+        return StepParseResult([], None, answer.method, answer.confidence, answer.answer, "failed", "insufficient_steps")
     if answer.answer is None:
-        return StepParseResult(steps, None, answer.method, "partial", None)
-    return StepParseResult(steps, answer.answer, answer.method, "success", None)
+        return StepParseResult(steps, None, answer.method, answer.confidence, None, "partial", None)
+    if answer.confidence == "low":
+        return StepParseResult(steps, None, answer.method, answer.confidence, answer.answer, "partial", None)
+    return StepParseResult(steps, answer.answer, answer.method, answer.confidence, answer.answer, "success", None)
 
 
 def extract_final_answer(solution: str) -> AnswerExtraction:
@@ -79,13 +86,13 @@ def extract_final_answer(solution: str) -> AnswerExtraction:
 
     boxed = _extract_last_boxed(solution)
     if boxed is not None:
-        return AnswerExtraction(boxed, "boxed")
+        return AnswerExtraction(boxed, "boxed", "high")
 
     hash_answers = re.findall(r"####\s*([^\n]+)", solution)
     if hash_answers:
         answer = _strip_answer(hash_answers[-1])
         if answer:
-            return AnswerExtraction(answer, "hash_answer")
+            return AnswerExtraction(answer, "hash_answer", "high")
 
     label_pattern = re.compile(
         r"(?is)(?:final\s+answer|correct\s+answer|answer)\s*(?:is|=|:)?\s*(?:\\boxed\{)?\s*([A-Za-z]|\(?[A-E]\)?|[-+]?\d+(?:\.\d+)?|[-+]?\d+\s*/\s*[-+]?\d+|\\frac\{[-+]?\d+\}\{[-+]?\d+\})"
@@ -94,21 +101,25 @@ def extract_final_answer(solution: str) -> AnswerExtraction:
     if label_answers:
         answer = _strip_answer(label_answers[-1])
         if answer:
-            return AnswerExtraction(answer, "answer_label")
+            return AnswerExtraction(answer, "answer_label", "high")
 
     tail = solution[-500:]
     choices = re.findall(r"(?<![A-Za-z])\(([A-E])\)|(?:option|choice)\s+([A-E])", tail, flags=re.IGNORECASE)
     if choices:
         letter = choices[-1][0] or choices[-1][1]
-        return AnswerExtraction(letter.upper(), "multiple_choice")
+        return AnswerExtraction(letter.upper(), "multiple_choice", "medium")
+
+    line_answer = _extract_final_line_answer(solution)
+    if line_answer is not None:
+        return AnswerExtraction(line_answer, "last_line_answer", "medium")
 
     numeric_pattern = re.compile(r"\\frac\{[-+]?\d+\}\{[-+]?\d+\}|[-+]?\d+\s*/\s*[-+]?\d+|[-+]?\d+(?:\.\d+)?")
     numbers = numeric_pattern.findall(tail)
     if numbers:
         answer = _strip_answer(numbers[-1])
         if answer:
-            return AnswerExtraction(answer, "numeric")
-    return AnswerExtraction(None, ANSWER_METHOD_NONE)
+            return AnswerExtraction(answer, "numeric_fallback", "low")
+    return AnswerExtraction(None, ANSWER_METHOD_NONE, "none")
 
 
 def validate_step_example(example: Mapping[str, Any]) -> None:
@@ -130,6 +141,11 @@ def validate_step_example(example: Mapping[str, Any]) -> None:
         raise ValueError(f"{status} step example must have final_answer null: {example['id']}")
     if status == "failed" and steps:
         raise ValueError(f"Failed step example must have no steps: {example['id']}")
+    confidence = example["metadata"].get("answer_confidence")
+    if confidence not in {"high", "medium", "low", "none"}:
+        raise ValueError(f"Invalid answer confidence for {example['id']}: {confidence}")
+    if status == "success" and confidence not in {"high", "medium"}:
+        raise ValueError(f"Successful step example requires high/medium answer confidence: {example['id']}")
 
 
 def parse_status_counts(examples: list[Mapping[str, Any]]) -> dict[str, int]:
@@ -144,6 +160,29 @@ def answer_method_counts(examples: list[Mapping[str, Any]]) -> dict[str, int]:
 
     counts = Counter(str(example["metadata"]["answer_extraction_method"]) for example in examples)
     return {method: int(count) for method, count in sorted(counts.items())}
+
+
+def answer_confidence_counts(examples: list[Mapping[str, Any]]) -> dict[str, int]:
+    """Count answer extraction confidence levels."""
+
+    counts = Counter(str(example["metadata"]["answer_confidence"]) for example in examples)
+    return {confidence: int(counts.get(confidence, 0)) for confidence in ("high", "medium", "low", "none")}
+
+
+def parse_failure_reason_counts(examples: list[Mapping[str, Any]]) -> dict[str, int]:
+    """Count parse failure reasons."""
+
+    counts = Counter(str(example["metadata"].get("parse_failure_reason")) for example in examples if example["parse_status"] == "failed")
+    return {reason: int(count) for reason, count in sorted(counts.items())}
+
+
+def _extract_final_line_answer(text: str) -> str | None:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in reversed(lines[-3:]):
+        cleaned = _strip_answer(line)
+        if re.fullmatch(r"\(?[A-E]\)?|\\frac\{[-+]?\d+\}\{[-+]?\d+\}|[-+]?\d+\s*/\s*[-+]?\d+|[-+]?\d+(?:\.\d+)?", cleaned):
+            return _strip_answer(cleaned)
+    return None
 
 
 def _extract_last_boxed(text: str) -> str | None:

@@ -173,6 +173,8 @@ data/processed/step_<split>.jsonl
   "metadata": {
     "step_count": 3,
     "answer_extraction_method": "boxed",
+    "answer_confidence": "high",
+    "answer_candidate": "14",
     "parse_failure_reason": null
   }
 }
@@ -194,6 +196,27 @@ failed
 
 `partial` 和 `failed` 的 `final_answer` 必须为 `null`。`failed` 的
 `steps` 必须为空数组，并在 `metadata.parse_failure_reason` 中记录原因。
+低置信度答案提取结果保留在 `metadata.answer_candidate`，但不写入
+`final_answer`。
+
+### answer_confidence
+
+```text
+high
+medium
+low
+none
+```
+
+规则：
+
+- `boxed`、`fbox`、`####` 和明确 answer 标签：high；
+- 选择题标记、最后一行独立答案：medium；
+- 末尾数字或分数 fallback：low；
+- 未提取答案：none。
+
+正式 DPO 默认只使用 high/medium。low 置信结果保留为 partial 或人工审查
+信息，不进入正式 DPO 偏好数据。
 
 ### 步骤规则
 
@@ -426,6 +449,15 @@ Stage 2 不加载 tokenizer，不计算真实 token 长度，也不按 token 长
 DPO 样本。`prompt_token_count`、`chosen_token_count` 和
 `rejected_token_count` 必须为 `null`，真实长度过滤推迟到训练前。
 
+DPO 候选偏好对必须先全部生成，再使用
+`seed|source_id|step_index|actual_strategy` 计算稳定 rank，按 rank 排序后
+截取。禁止按遍历顺序达到上限后提前停止。单个 `source_id` 的贡献数量必须
+受固定上限控制。
+
+Mini DPO 必须只从 Stage 1 manifest 中 Mini ID 集合对应的源题目产生候选。
+Mini DPO 可在这些候选内按稳定 rank 截取 64 到 256 条。所有 Mini
+`source_id` 必须同时属于对应 formal 视图和 Stage 1 Mini 视图。
+
 ### 长度规则
 
 ```text
@@ -453,7 +485,7 @@ max_length = 1024
 
 ## 8. 评测样本
 
-### 文件
+### Stage 1 文件
 
 ```text
 data/processed/eval.jsonl
@@ -615,46 +647,41 @@ Stage 1 只记录标准化和划分统计，不提前写入步骤、SFT 或 DPO
 同一基础数据可以根据两份配置分别输出视图统计。长度过滤统计
 在 Stage 2 之后由对应数据生产阶段添加。
 
-### Stage 2 扩展字段
+### Stage 2 文件
 
-Stage 2 在同一 `data_statistics.json` 中增加：
+Stage 2 使用独立统计文件，避免覆盖 Stage 1 历史统计：
+
+```text
+data/processed/stage2_statistics.json
+```
+
+Stage 2 最小字段：
 
 ```json
 {
-  "stage2": {
-    "completed": true,
-    "token_length_status": "not_checked_no_tokenizer",
-    "step_counts": {
-      "train": 0,
-      "validation": 0,
-      "evaluation": 0
-    },
-    "parse_status_counts": {
-      "success": 0,
-      "partial": 0,
-      "failed": 0
-    },
-    "answer_extraction_counts": {},
-    "sft_counts_formal": {
-      "train": 0,
-      "validation": 0
-    },
-    "sft_counts_mini": {
-      "train": 0,
-      "validation": 0
-    },
-    "dpo_counts_formal": {
-      "train": 0,
-      "validation": 0
-    },
-    "dpo_counts_mini": {
-      "train": 0,
-      "validation": 0
-    },
-    "mutation_success_counts": {},
-    "mutation_failure_counts": {},
-    "manual_review_rows": 0
-  }
+  "schema_version": "1.0",
+  "stage": 2,
+  "completed": true,
+  "stage1_manifest_file": {
+    "path": "data/processed/split_manifest.json",
+    "sha256": "..."
+  },
+  "token_length_status": "not_checked_no_tokenizer",
+  "step_counts_formal": {},
+  "step_counts_mini": {},
+  "parse_status_counts": {},
+  "parse_failure_reason_counts": {},
+  "answer_extraction_method_counts": {},
+  "answer_confidence_counts": {},
+  "sft_counts_formal": {},
+  "sft_counts_mini": {},
+  "dpo_counts_formal": {},
+  "dpo_counts_mini": {},
+  "dpo_max_pairs_per_source": 2,
+  "dpo_allowed_answer_confidences": ["high", "medium"],
+  "dpo_applied_strategy_counts": {},
+  "dpo_mutation_failures": {},
+  "manual_review_count": 0
 }
 ```
 
@@ -740,28 +767,41 @@ Stage 1 最小 Schema：
 }
 ```
 
-Stage 2 完成后，manifest 必须保留 Stage 1 字段，并新增：
+Stage 2 使用独立 manifest，避免覆盖 Stage 1 历史 manifest：
+
+```text
+data/processed/stage2_manifest.json
+```
+
+Stage 2 manifest 必须记录 Stage 1 manifest 的路径和 sha256：
 
 ```json
 {
-  "stage2": {
-    "completed": true,
-    "token_length_status": "not_checked_no_tokenizer",
-    "views": {
-      "formal": {
-        "step": {"train": [], "validation": [], "evaluation": []},
-        "sft": {"train": [], "validation": []},
-        "dpo": {"train": [], "validation": []}
-      },
-      "mini": {
-        "step": {"train": [], "validation": [], "evaluation": []},
-        "sft": {"train": [], "validation": []},
-        "dpo": {"train": [], "validation": []}
-      }
+  "schema_version": "1.0",
+  "stage": 2,
+  "completed": true,
+  "stage1_manifest_file": {
+    "path": "data/processed/split_manifest.json",
+    "sha256": "..."
+  },
+  "token_length_status": "not_checked_no_tokenizer",
+  "views": {
+    "formal": {
+      "step": {"train": [], "validation": [], "evaluation": []},
+      "sft": {"train": [], "validation": []},
+      "dpo": {"train": [], "validation": []}
     },
-    "files": {},
-    "manual_review_file": {}
-  }
+    "mini": {
+      "step": {"train": [], "validation": [], "evaluation": []},
+      "sft": {"train": [], "validation": []},
+      "sft_source_ids": {"train": [], "validation": []},
+      "dpo": {"train": [], "validation": []},
+      "dpo_source_ids": {"train": [], "validation": []}
+    }
+  },
+  "files": {},
+  "statistics_file": {},
+  "manual_review_file": {}
 }
 ```
 
@@ -798,12 +838,19 @@ data/processed/dpo_validation.jsonl
 data/processed/eval.jsonl
 data/processed/data_statistics.json
 data/processed/split_manifest.json
+data/processed/stage2_statistics.json
+data/processed/stage2_manifest.json
 data/processed/manual_review_preferences.jsonl
 ```
 
 不为 Mac 和 CUDA 分别复制基础数据文件。
 
-长度过滤后的训练视图可以在加载时按配置生成，或使用带明确配置后缀的缓存文件；具体方式在 Stage 2 决定。
+Stage 1 `split_manifest.json` 只描述 normalized 数据和基础 split。Stage 2
+`stage2_manifest.json` 描述 step/SFT/DPO/manual-review 数据，并引用 Stage 1
+manifest 的路径与 sha256。
+
+长度过滤后的训练视图可以在加载时按配置生成，或使用带明确配置后缀的缓存文件；
+真实 token 长度过滤推迟到训练阶段。
 
 Stage 1 使用 staging directory 实现完整输出事务：
 

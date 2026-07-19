@@ -14,15 +14,18 @@ def build_dpo_examples(
     step_examples: list[Mapping[str, Any]],
     config: Mapping[str, Any],
     maximum: int,
+    max_pairs_per_source: int = 2,
+    allowed_answer_confidences: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Build DPO examples in deterministic source and step order."""
+    """Build ranked DPO examples with deterministic source coverage limits."""
 
     strategy = str(config["negative_sampling"]["strategy"])
     offsets = [int(offset) for offset in config["negative_sampling"]["number_offset_choices"]]
     seed = int(config["project"]["seed"])
     require_answer = bool(config["preprocessing"].get("require_final_answer_for_dpo", True))
+    allowed_confidences = allowed_answer_confidences or {"high", "medium"}
     failures: Counter[str] = Counter()
-    pairs: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
 
     for step_example in step_examples:
         if step_example["parse_status"] != "success":
@@ -30,6 +33,10 @@ def build_dpo_examples(
             continue
         if require_answer and not step_example.get("final_answer"):
             failures["skipped_missing_final_answer"] += 1
+            continue
+        confidence = str(step_example["metadata"].get("answer_confidence", "none"))
+        if confidence not in allowed_confidences:
+            failures[f"skipped_answer_confidence_{confidence}"] += 1
             continue
         for step_index, chosen_step in enumerate(step_example["steps"]):
             result = mutate_step(
@@ -52,10 +59,26 @@ def build_dpo_examples(
                 continue
             pair = _build_pair(step_example, step_index, chosen_step, rejected_step, config, result, strategy)
             validate_dpo_example(pair)
-            pairs.append(pair)
-            if len(pairs) >= maximum:
-                return pairs, dict(failures)
-    return pairs, dict(failures)
+            pair["metadata"]["sample_rank"] = dpo_sample_rank(
+                seed=seed,
+                source_id=str(step_example["source_id"]),
+                step_index=step_index,
+                actual_strategy=str(result.strategy),
+            )
+            candidates.append(pair)
+
+    selected: list[dict[str, Any]] = []
+    per_source_counts: Counter[str] = Counter()
+    for pair in sorted(candidates, key=lambda item: (item["metadata"]["sample_rank"], item["id"])):
+        source_id = str(pair["source_id"])
+        if per_source_counts[source_id] >= max_pairs_per_source:
+            failures["skipped_source_pair_limit"] += 1
+            continue
+        selected.append(pair)
+        per_source_counts[source_id] += 1
+        if len(selected) >= maximum:
+            break
+    return selected, dict(failures)
 
 
 def build_manual_review_examples(
@@ -125,7 +148,7 @@ def _build_pair(
     prompt.extend(assistant_message(step) for step in step_example["steps"][:step_index])
     return {
         "schema_version": "1.0",
-        "id": f"{step_example['source_id']}_step_{step_index:03d}_{configured_strategy}",
+        "id": f"{step_example['id']}_step_{step_index:03d}_{result.strategy}",
         "source_id": step_example["source_id"],
         "step_index": step_index,
         "prompt": prompt,
@@ -136,6 +159,8 @@ def _build_pair(
             "negative_strategy": configured_strategy,
             "parse_status": step_example["parse_status"],
             "final_answer": step_example["final_answer"],
+            "answer_confidence": step_example["metadata"].get("answer_confidence"),
+            "normalized_id": step_example["id"],
             "prompt_history_step_count": step_index,
             "mutation": mutation_metadata(result, configured_strategy),
             "token_length_status": "not_checked_no_tokenizer",
@@ -161,3 +186,10 @@ def _single_assistant_text(messages: Any, field: str, example_id: str) -> str:
 
 def _manual_review_rank(example_id: str, seed: int) -> str:
     return hashlib.sha256(f"manual_review|{seed}|{example_id}".encode("utf-8")).hexdigest()
+
+
+def dpo_sample_rank(seed: int, source_id: str, step_index: int, actual_strategy: str) -> str:
+    """Rank candidate DPO examples independently of traversal order."""
+
+    payload = f"dpo_rank|{seed}|{source_id}|{step_index}|{actual_strategy}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

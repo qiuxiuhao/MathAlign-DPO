@@ -1,4 +1,4 @@
-"""Load and validate the two approved Stage 1 configs."""
+"""Load and validate the two approved project configs."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ SPLITS = ("train", "validation", "evaluation")
 
 
 @dataclass(frozen=True)
-class Stage1Configs:
+class ProjectConfigs:
     """Validated Mini/formal configuration pair."""
 
     mini_path: Path
@@ -42,8 +42,8 @@ class Stage1Configs:
         return Path(str(self.formal["data"]["processed_dir"]))
 
 
-def load_stage1_configs(mini_config: str | Path, formal_config: str | Path) -> Stage1Configs:
-    """Load and validate Mini and formal configs for shared Stage 1 preparation."""
+def load_project_configs(mini_config: str | Path, formal_config: str | Path) -> ProjectConfigs:
+    """Load and validate Mini and formal configs for the shared project pipeline."""
 
     mini_path = Path(mini_config)
     formal_path = Path(formal_config)
@@ -52,7 +52,7 @@ def load_stage1_configs(mini_config: str | Path, formal_config: str | Path) -> S
     _validate_single_config(mini, mini_path, expected_mode="mini")
     _validate_single_config(formal, formal_path, expected_mode="formal")
     _validate_shared_data_config(mini, formal)
-    return Stage1Configs(mini_path=mini_path, formal_path=formal_path, mini=mini, formal=formal)
+    return ProjectConfigs(mini_path=mini_path, formal_path=formal_path, mini=mini, formal=formal)
 
 
 def split_ratios(config: dict[str, Any]) -> dict[str, float]:
@@ -179,6 +179,9 @@ def _validate_shared_data_config(mini: dict[str, Any], formal: dict[str, Any]) -
         "normalized_eval_file",
         "statistics_file",
         "split_manifest_file",
+        "stage2_statistics_file",
+        "stage2_manifest_file",
+        "manual_review_file",
     ]
     for key in shared_data_keys:
         if mini["data"].get(key) != formal["data"].get(key):

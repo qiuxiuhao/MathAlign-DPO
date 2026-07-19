@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from mathalign_dpo.config.load_config import load_stage1_configs, sample_counts, split_ratios
+from mathalign_dpo.config.load_config import load_project_configs, sample_counts, split_ratios
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,13 +14,15 @@ FORMAL = ROOT / "configs/qwen25_3b_4090.yaml"
 
 class ConfigTests(unittest.TestCase):
     def test_stage1_configs_parse_and_share_data_settings(self) -> None:
-        configs = load_stage1_configs(MINI, FORMAL)
+        configs = load_project_configs(MINI, FORMAL)
 
         self.assertEqual(configs.mini["project"]["run_mode"], "mini")
         self.assertEqual(configs.formal["project"]["run_mode"], "formal")
         self.assertNotIn("stage", configs.mini["project"])
         self.assertNotIn("stage", configs.formal["project"])
         self.assertEqual(configs.dataset_revision, configs.mini["data"]["dataset_revision"])
+        self.assertNotEqual(configs.formal["data"]["split_manifest_file"], configs.formal["data"]["stage2_manifest_file"])
+        self.assertNotEqual(configs.formal["data"]["statistics_file"], configs.formal["data"]["stage2_statistics_file"])
         self.assertTrue(configs.dataset_revision)
         self.assertLess(abs(sum(split_ratios(configs.formal).values()) - 1.0), 1e-9)
 
@@ -30,7 +32,7 @@ class ConfigTests(unittest.TestCase):
             self.assertLessEqual(mini_counts[split], formal_counts[split])
 
     def test_mps_and_cuda_quantization_rules(self) -> None:
-        configs = load_stage1_configs(MINI, FORMAL)
+        configs = load_project_configs(MINI, FORMAL)
 
         self.assertEqual(configs.mini["runtime"]["backend"], "mps")
         self.assertIs(configs.mini["quantization"]["enabled"], False)
@@ -52,4 +54,4 @@ class ConfigTests(unittest.TestCase):
             formal_path.write_text(FORMAL.read_text(encoding="utf-8"), encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "project.stage"):
-                load_stage1_configs(mini_path, formal_path)
+                load_project_configs(mini_path, formal_path)
