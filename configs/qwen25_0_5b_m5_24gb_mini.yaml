@@ -112,6 +112,7 @@ sft:
 
 dpo:
   enabled: true
+  dataset_dir: data/processed/mini/dpo_v2
   output_dir: outputs/mini/dpo
   train_samples: 179
   validation_samples: 21

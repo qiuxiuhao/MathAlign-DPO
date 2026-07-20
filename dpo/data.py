@@ -35,6 +35,9 @@ class DPODatasets:
 def dpo_dataset_path(config: Mapping[str, Any]) -> Path:
     """Return the local DPO DatasetDict path for the configured run mode."""
 
+    configured = config.get("dpo", {}).get("dataset_dir")
+    if configured:
+        return Path(str(configured))
     mode = str(config["project"]["run_mode"])
     return Path(str(config["data"][f"{mode}_dir"])) / "dpo"
 

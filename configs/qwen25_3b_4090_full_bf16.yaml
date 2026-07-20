@@ -115,6 +115,7 @@ sft:
 
 dpo:
   enabled: true
+  dataset_dir: data/processed/formal/dpo_v2
   output_dir: outputs/formal_full_bf16/dpo
   train_samples: 5000
   validation_samples: 200
