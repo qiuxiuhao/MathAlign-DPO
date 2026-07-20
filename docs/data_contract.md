@@ -2,9 +2,9 @@
 
 ## 当前状态
 
-当前项目已经完成 Stage 1 数据预处理、Stage 2 Mini SFT 和 Stage 3 Mini DPO。
+当前项目已经完成 Stage 1 数据预处理、Stage 2 Mini SFT、Stage 3 Mini DPO 和 Stage 4 独立评价入口。
 
-Stage 1 负责生成后续训练和评价直接消费的最终 Hugging Face Dataset。Stage 2 和 Stage 3 只能通过 `datasets.load_from_disk()` 加载本地数据，不再修改数据内容。
+Stage 1 负责生成后续训练和评价直接消费的最终 Hugging Face Dataset。Stage 2、Stage 3 和 Stage 4 只能通过 `datasets.load_from_disk()` 加载本地数据，不再修改数据内容。
 
 ## 存储结构
 

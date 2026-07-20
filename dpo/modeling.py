@@ -54,7 +54,6 @@ def validate_sft_dir(config: Mapping[str, Any], sft_dir: str | Path, smoke_test:
         "run_mode": run_config.get("run_mode"),
         "model": run_config.get("model", {}),
         "dataset_counts": run_config.get("dataset_counts", {}),
-        "base_sft_evaluation": run_config.get("base_sft_evaluation", {}),
     }
 
 

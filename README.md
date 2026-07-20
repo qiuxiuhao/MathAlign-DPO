@@ -1,6 +1,6 @@
 # MathAlign-DPO
 
-当前阶段：**Stage 3 Mini DPO 已完成，formal 训练入口已具备**。
+当前阶段：**Stage 4 独立评价入口已具备，formal 训练入口已具备**。
 
 MathAlign-DPO 是一个数学推理后训练项目，当前有效链路已经迁移到顶层模块：
 
@@ -9,6 +9,7 @@ configs/
 scripts/prepare_data.py
 sft/
 dpo/
+evaluation/
 ```
 
 旧 `src/` 包、旧 `tests/`、旧 `plans/` 和旧 `scripts/train_dpo.py` 已删除。后续代码不应再 import `mathalign_dpo.*`。
@@ -17,11 +18,12 @@ dpo/
 
 ```text
 Stage 1 数据预处理
-  -> Stage 2 SFT 训练与 Base/SFT 评价
-  -> Stage 3 DPO 训练与 Base/SFT/DPO 评价
+  -> Stage 2 SFT 训练
+  -> Stage 3 DPO 训练
+  -> Stage 4 Base/SFT/DPO 统一评价
 ```
 
-Stage 1 负责全部数据处理。Stage 2 和 Stage 3 只能通过 `datasets.load_from_disk()` 读取本地 Hugging Face Dataset，不再做数据清洗、长度过滤、样本补齐、重新排序或候选池构造。
+Stage 1 负责全部数据处理。Stage 2、Stage 3 和 Stage 4 只能通过 `datasets.load_from_disk()` 读取本地 Hugging Face Dataset，不再做数据清洗、长度过滤、样本补齐、重新排序或候选池构造。
 
 ## 数据目录
 
@@ -122,7 +124,7 @@ python scripts/prepare_data.py \
 
 ## Mac Mini 完整训练与评价
 
-先运行 SFT。训练完成后会自动保存 SFT adapter，并使用 `data/processed/mini/evaluation` 对 Base 和 SFT 做评价：
+先运行 SFT。训练完成后会自动保存 SFT adapter、tokenizer 和少量 adapter reload samples；SFT 阶段不单独做 Base/SFT 生成评价：
 
 ```bash
 python -m sft.train \
@@ -140,12 +142,11 @@ outputs/mini/sft/
 ├── train_metrics.json
 ├── eval_metrics.json
 ├── best_adapter_metrics.json
-├── base_sft_predictions.jsonl
-├── base_sft_summary.json
+├── adapter_reload_samples.jsonl
 └── run_config.json
 ```
 
-再运行 DPO。DPO 会从 `outputs/mini/sft` 加载 SFT adapter，训练完成后自动评价 Base、SFT 和 DPO：
+再运行 DPO。DPO 会从 `outputs/mini/sft` 加载 SFT adapter，训练完成后自动保存 DPO adapter、tokenizer 和少量 adapter reload samples：
 
 ```bash
 python -m dpo.train \
@@ -164,21 +165,40 @@ outputs/mini/dpo/
 ├── train_metrics.json
 ├── eval_metrics.json
 ├── best_adapter_metrics.json
-├── base_sft_dpo_predictions.jsonl
-├── base_sft_dpo_summary.json
+├── adapter_reload_samples.jsonl
 └── run_config.json
 ```
 
-查看 Mini 评价汇总：
+最后运行 Stage 4 评价。Stage 4 会使用 `data/processed/mini/evaluation` 统一评价 Base、SFT 和 DPO：
 
 ```bash
-python -m json.tool outputs/mini/sft/base_sft_summary.json
-python -m json.tool outputs/mini/dpo/base_sft_dpo_summary.json
+python -m evaluation.run \
+  --config configs/qwen25_0_5b_m5_24gb_mini.yaml \
+  --sft-dir outputs/mini/sft \
+  --dpo-dir outputs/mini/dpo \
+  --overwrite
+```
+
+Stage 4 主要产物：
+
+```text
+outputs/results/mini/
+├── base_sft_dpo_predictions.jsonl
+├── base_sft_dpo_summary.json
+├── correct_cases.jsonl
+├── error_cases.jsonl
+└── run_config.json
+```
+
+查看 Mini 最终评价汇总：
+
+```bash
+python -m json.tool outputs/results/mini/base_sft_dpo_summary.json
 ```
 
 ## RTX 4090 完整训练与评价
 
-先运行 formal SFT。训练完成后会自动使用 `data/processed/formal/evaluation` 评价 Base 和 SFT：
+先运行 formal SFT。训练完成后会自动保存 SFT adapter、tokenizer 和少量 adapter reload samples；SFT 阶段不单独做 Base/SFT 生成评价：
 
 ```bash
 python -m sft.train \
@@ -196,8 +216,7 @@ outputs/formal/sft/
 ├── train_metrics.json
 ├── eval_metrics.json
 ├── best_adapter_metrics.json
-├── base_sft_predictions.jsonl
-├── base_sft_summary.json
+├── adapter_reload_samples.jsonl
 └── run_config.json
 ```
 
@@ -220,16 +239,35 @@ outputs/formal/dpo/
 ├── train_metrics.json
 ├── eval_metrics.json
 ├── best_adapter_metrics.json
-├── base_sft_dpo_predictions.jsonl
-├── base_sft_dpo_summary.json
+├── adapter_reload_samples.jsonl
 └── run_config.json
 ```
 
-查看 formal 评价汇总：
+最后运行 formal Stage 4 评价：
 
 ```bash
-python -m json.tool outputs/formal/sft/base_sft_summary.json
-python -m json.tool outputs/formal/dpo/base_sft_dpo_summary.json
+python -m evaluation.run \
+  --config configs/qwen25_3b_4090.yaml \
+  --sft-dir outputs/formal/sft \
+  --dpo-dir outputs/formal/dpo \
+  --overwrite
+```
+
+formal Stage 4 主要产物：
+
+```text
+outputs/results/formal/
+├── base_sft_dpo_predictions.jsonl
+├── base_sft_dpo_summary.json
+├── correct_cases.jsonl
+├── error_cases.jsonl
+└── run_config.json
+```
+
+查看 formal 最终评价汇总：
+
+```bash
+python -m json.tool outputs/results/formal/base_sft_dpo_summary.json
 ```
 
 ## 断点继续训练
@@ -281,6 +319,7 @@ python -m dpo.train \
 - Stage 1 数据预处理已完成。
 - Mini SFT 已运行完成，产物位于 `outputs/mini/sft`。
 - Mini DPO 已运行完成，产物位于 `outputs/mini/dpo`。
+- Stage 4 独立评价入口已完成，默认产物位于 `outputs/results/<mode>`。
 - formal SFT / formal DPO 入口已准备好，但需要在 RTX 4090 环境中实际运行。
 
 当前只保留三份阶段报告：
@@ -294,8 +333,9 @@ reports/stage_3_refactor_report.md
 ## 注意事项
 
 - `data/raw/`、`data/processed/`、`model/` 和 `outputs/` 不应提交到 Git。
-- Stage 2 和 Stage 3 不负责重新构造数据。
+- Stage 2、Stage 3 和 Stage 4 不负责重新构造数据。
 - `adapter/` 保存训练结束时的最新 adapter，`best_adapter/` 保存验证集 `eval_loss` 最低的 adapter。
+- SFT 和 DPO 阶段不单独做生成评价；最终准确率统一看 Stage 4 的 `base_sft_dpo_summary.json`。
 - `checkpoint-*` 用于断点继续训练，`adapter/` 和 `best_adapter/` 只保存 adapter 权重，不包含 optimizer 和 scheduler 状态。
 - DPO 会校验 SFT adapter 的运行模式和模型身份，避免 formal DPO 误用 Mini SFT adapter。
 - formal 配置要求 CUDA 设备名包含 `RTX 4090`。

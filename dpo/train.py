@@ -13,10 +13,9 @@ from typing import Any, Mapping, Sequence
 
 from configs.load_config import apply_runtime_overrides, load_config
 from dpo.data import DPODatasets, load_dpo_datasets
-from dpo.evaluate import evaluate_base_sft_dpo
 from dpo.modeling import load_dpo_for_generation, load_policy_from_sft_adapter, validate_sft_dir
+from evaluation.common import release_accelerator_memory, write_json, write_jsonl
 from sft.checkpointing import BestAdapterSaverCallback, ensure_best_adapter_saved, load_existing_best_adapter_state, save_adapter
-from sft.evaluate import release_accelerator_memory, write_json, write_jsonl
 from sft.modeling import validate_runtime, validate_tokenizer
 from transformers import TrainerCallback
 
@@ -45,11 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train DPO from Stage 1 Hugging Face Datasets.")
     parser.add_argument("--config", required=True, help="Path to one YAML config.")
     parser.add_argument("--sft-dir", required=True, help="Completed SFT output directory.")
-    parser.add_argument("--smoke-test", action="store_true", help="Use smoke training/evaluation limits from config.")
+    parser.add_argument("--smoke-test", action="store_true", help="Use smoke training limits from config.")
     parser.add_argument("--output-dir", default=None, help="Override output directory. Defaults to config.dpo.output_dir.")
     parser.add_argument("--train-samples", type=int, default=None, help="Use the first N train rows for debugging.")
     parser.add_argument("--validation-samples", type=int, default=None, help="Use the first N validation rows for debugging.")
-    parser.add_argument("--eval-samples", type=int, default=None, help="Use the first N evaluation rows for debugging.")
+    parser.add_argument("--eval-samples", type=int, default=None, help="Kept for CLI compatibility; DPO skips final generation evaluation.")
     parser.add_argument("--max-steps", type=int, default=None, help="Override DPO max_steps for debugging.")
     parser.add_argument("--resume-from-checkpoint", default=None, help="Resume Trainer state from an existing checkpoint directory.")
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing output directory.")
@@ -68,7 +67,7 @@ def train_dpo(
     overwrite: bool = False,
     resume_from_checkpoint: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Run DPO training, adapter reload validation, and Base/SFT/DPO evaluation."""
+    """Run DPO training and adapter reload validation."""
 
     original_config = load_config(config_path)
     config, overrides = apply_runtime_overrides(
@@ -122,14 +121,6 @@ def train_dpo(
             max_new_tokens=int(config["dpo"]["adapter_reload_max_new_tokens"]),
         )
         write_jsonl(out_dir / "adapter_reload_samples.jsonl", reload_samples)
-        evaluation_summary = evaluate_base_sft_dpo(
-            config,
-            sft_adapter_dir=Path(sft_source["adapter_dir"]),
-            dpo_adapter_dir=adapter_dir,
-            tokenizer_dir=tokenizer_dir,
-            output_dir=out_dir,
-            sample_count=int(config["evaluation"]["samples"]),
-        )
         run_config = {
             "status": "completed",
             "stage": 3,
@@ -148,12 +139,11 @@ def train_dpo(
             "tokenizer": tokenizer_metadata,
             "adapter_paths": {"latest": str(adapter_dir), "best": str(best_adapter["path"]), "tokenizer": str(tokenizer_dir)},
             "best_adapter": best_adapter,
-            "dataset_paths": {"dpo": str(datasets.path), "evaluation": str(Path(str(config["data"][f"{config['project']['run_mode']}_dir"])) / "evaluation")},
+            "dataset_paths": {"dpo": str(datasets.path)},
             "dataset_counts": {"train": len(datasets.train), "validation": len(datasets.validation)},
             "dpo_config": dpo_runtime_metadata(config),
             "train_metrics": train_metrics,
             "eval_metrics": eval_metrics,
-            "base_sft_dpo_evaluation": evaluation_summary,
             "elapsed_seconds": round(time.perf_counter() - start, 6),
         }
         write_json(out_dir / "run_config.json", run_config)

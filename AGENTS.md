@@ -20,8 +20,9 @@ Mini 不是独立玩具项目，而是正式链路的小规模运行配置。
 ```text
 configs/                 YAML 配置加载
 scripts/prepare_data.py  Stage 1 数据预处理
-sft/                     Stage 2 SFT 训练与 Base/SFT 评价
-dpo/                     Stage 3 DPO 训练与 Base/SFT/DPO 评价
+sft/                     Stage 2 SFT 训练
+dpo/                     Stage 3 DPO 训练
+evaluation/              Stage 4 Base/SFT/DPO 统一评价
 ```
 
 旧 `src/` 包已经删除。不要重新引入 `mathalign_dpo.*` import。
@@ -41,16 +42,19 @@ Stage 2 已完成：
 
 - 从 `data/processed/mini/sft` 训练 Mini SFT。
 - SFT adapter 保存到 `outputs/mini/sft/adapter`。
-- 使用 `data/processed/mini/evaluation` 完成 Base/SFT 初步评价。
 
 Stage 3 已完成：
 
 - 从 `data/processed/mini/dpo` 训练 Mini DPO。
 - DPO 基于 `outputs/mini/sft` 初始化。
 - DPO adapter 保存到 `outputs/mini/dpo/adapter`。
-- 使用 `data/processed/mini/evaluation` 完成 Base/SFT/DPO 初步评价。
 
-Formal CUDA SFT/DPO 代码路径已经存在，但需要在 RTX 4090 机器上运行，并且 DPO 需要先有 formal SFT adapter。
+Stage 4 已完成：
+
+- 使用 `data/processed/mini/evaluation` 独立评价 Base/SFT/DPO。
+- 默认评价产物保存到 `outputs/results/mini`。
+
+Formal CUDA SFT/DPO/Stage 4 代码路径已经存在，但需要在 RTX 4090 机器上运行，并且 DPO 需要先有 formal SFT adapter。
 
 ## 4. 数据规则
 
@@ -74,7 +78,7 @@ Evaluation 数据路径：
 data/processed/<mode>/evaluation
 ```
 
-SFT 和 DPO 不允许重新执行：
+SFT、DPO 和 Evaluation 不允许重新执行：
 
 - 数据清洗；
 - prompt/completion 重构；
@@ -142,6 +146,16 @@ python -m dpo.train \
   --overwrite
 ```
 
+Mini Stage 4 评价：
+
+```bash
+python -m evaluation.run \
+  --config configs/qwen25_0_5b_m5_24gb_mini.yaml \
+  --sft-dir outputs/mini/sft \
+  --dpo-dir outputs/mini/dpo \
+  --overwrite
+```
+
 Formal DPO smoke，需先有 formal SFT：
 
 ```bash
@@ -151,9 +165,21 @@ python -m dpo.train \
   --smoke-test \
   --train-samples 32 \
   --validation-samples 8 \
-  --eval-samples 8 \
   --max-steps 1 \
   --output-dir outputs/formal/dpo_smoke \
+  --overwrite
+```
+
+Formal Stage 4 smoke，需先有 formal SFT 和 formal DPO：
+
+```bash
+python -m evaluation.run \
+  --config configs/qwen25_3b_4090.yaml \
+  --sft-dir outputs/formal/sft \
+  --dpo-dir outputs/formal/dpo_smoke \
+  --smoke-test \
+  --eval-samples 8 \
+  --output-dir outputs/results/formal_smoke \
   --overwrite
 ```
 

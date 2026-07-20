@@ -1,4 +1,4 @@
-"""Base/SFT/DPO evaluation for the standalone DPO stage."""
+"""Base/SFT/DPO generation evaluation for Stage 4."""
 
 from __future__ import annotations
 
@@ -6,8 +6,15 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from dpo.modeling import load_dpo_for_generation
+from evaluation.common import (
+    case_samples,
+    generate_predictions,
+    release_accelerator_memory,
+    summarize_predictions,
+    write_json,
+    write_jsonl,
+)
 from sft.data import load_evaluation_dataset
-from sft.evaluate import case_samples, generate_predictions, release_accelerator_memory, write_json, write_jsonl
 from sft.modeling import load_base_for_generation, load_sft_for_generation
 
 
@@ -38,7 +45,7 @@ def evaluate_base_sft_dpo(
         finally:
             del loaded
             release_accelerator_memory()
-    summary = summarize_predictions(predictions)
+    summary = summarize_predictions(predictions, MODEL_STAGES)
     correct, errors = case_samples(predictions)
     write_jsonl(output_dir / "base_sft_dpo_predictions.jsonl", predictions)
     write_json(output_dir / "base_sft_dpo_summary.json", summary)
@@ -47,23 +54,7 @@ def evaluate_base_sft_dpo(
     return summary
 
 
-def summarize_predictions(predictions: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Summarize exact match and generation speed by model stage."""
+def summarize_base_sft_dpo(predictions: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Summarize Stage 4 predictions."""
 
-    summary: dict[str, Any] = {}
-    for stage in MODEL_STAGES:
-        rows = [row for row in predictions if row["model_stage"] == stage]
-        if not rows:
-            raise ValueError(f"No predictions for {stage}")
-        extracted = sum(1 for row in rows if bool(row["answer_extracted"]))
-        exact = sum(1 for row in rows if bool(row["exact_match"]))
-        tokens = [int(row["output_tokens"]) for row in rows]
-        seconds = [float(row["generation_seconds"]) for row in rows]
-        summary[stage] = {
-            "num_examples": len(rows),
-            "answer_extraction_rate": extracted / len(rows),
-            "exact_match": exact / len(rows),
-            "average_output_tokens": sum(tokens) / len(tokens),
-            "average_generation_seconds": sum(seconds) / len(seconds),
-        }
-    return summary
+    return summarize_predictions(predictions, MODEL_STAGES)

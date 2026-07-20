@@ -1,4 +1,4 @@
-"""Base vs SFT evaluation for the standalone SFT stage."""
+"""Shared generation, scoring, and JSON helpers for evaluation."""
 
 from __future__ import annotations
 
@@ -12,43 +12,6 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from datasets import Dataset
-
-from sft.data import load_evaluation_dataset
-from sft.modeling import load_base_for_generation, load_sft_for_generation
-
-
-MODEL_STAGES = ("base", "sft")
-
-
-def evaluate_base_and_sft(
-    config: Mapping[str, Any],
-    adapter_dir: Path,
-    tokenizer_dir: Path,
-    output_dir: Path,
-    sample_count: int | None = None,
-) -> dict[str, Any]:
-    """Evaluate Base and SFT with identical prompts and generation settings."""
-
-    evaluation = load_evaluation_dataset(config, limit=sample_count or int(config["evaluation"]["samples"]))
-    predictions: list[dict[str, Any]] = []
-    for stage in MODEL_STAGES:
-        loaded = (
-            load_base_for_generation(config, tokenizer_dir=tokenizer_dir)
-            if stage == "base"
-            else load_sft_for_generation(config, adapter_dir=adapter_dir, tokenizer_dir=tokenizer_dir)
-        )
-        try:
-            predictions.extend(generate_predictions(config, loaded.model, loaded.tokenizer, evaluation, stage))
-        finally:
-            del loaded
-            release_accelerator_memory()
-    summary = summarize_predictions(predictions)
-    correct, errors = case_samples(predictions)
-    write_jsonl(output_dir / "base_sft_predictions.jsonl", predictions)
-    write_json(output_dir / "base_sft_summary.json", summary)
-    write_jsonl(output_dir / "correct_cases.jsonl", correct)
-    write_jsonl(output_dir / "error_cases.jsonl", errors)
-    return summary
 
 
 def generate_predictions(
@@ -65,11 +28,14 @@ def generate_predictions(
     output: list[dict[str, Any]] = []
     generation_config = {
         "max_new_tokens": int(config["evaluation"]["max_new_tokens"]),
-        "do_sample": False,
+        "do_sample": bool(config["evaluation"].get("do_sample", False)),
         "num_beams": int(config["evaluation"]["num_beams"]),
         "pad_token_id": tokenizer.pad_token_id,
         "eos_token_id": tokenizer.eos_token_id,
     }
+    if generation_config["do_sample"]:
+        generation_config["temperature"] = float(config["evaluation"]["temperature"])
+        generation_config["top_p"] = float(config["evaluation"]["top_p"])
     progress = progress_rows(rows, description=f"Evaluating {model_stage}")
     for row in progress:
         prompt_messages = list(row["prompt_messages"])
@@ -120,11 +86,11 @@ def progress_rows(rows: Dataset, description: str) -> Any:
     return tqdm(rows, total=len(rows), desc=description, dynamic_ncols=True)
 
 
-def summarize_predictions(predictions: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def summarize_predictions(predictions: Sequence[Mapping[str, Any]], model_stages: Sequence[str]) -> dict[str, Any]:
     """Summarize exact match and generation speed by model stage."""
 
     summary: dict[str, Any] = {}
-    for stage in MODEL_STAGES:
+    for stage in model_stages:
         rows = [row for row in predictions if row["model_stage"] == stage]
         if not rows:
             raise ValueError(f"No predictions for {stage}")
@@ -207,10 +173,12 @@ def release_accelerator_memory() -> None:
     try:
         import torch
 
-        if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
-            torch.mps.empty_cache()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        mps_is_available = bool(mps_backend is not None and getattr(mps_backend, "is_available", lambda: False)())
+        if mps_is_available and hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+            torch.mps.empty_cache()
     except ImportError:
         return
 
@@ -319,3 +287,4 @@ def _normalize_decimal(value: str) -> str | None:
     if decimal == decimal.to_integral_value():
         return str(int(decimal))
     return format(decimal.normalize(), "f")
+

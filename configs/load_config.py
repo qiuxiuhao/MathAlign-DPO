@@ -24,7 +24,7 @@ def load_config(config_path: str | Path) -> dict[str, Any]:
 
 
 def validate_config(config: Mapping[str, Any], path: Path | None = None) -> None:
-    """Validate only the fields required by the standalone SFT/DPO stages."""
+    """Validate only the fields required by the standalone SFT/DPO/evaluation stages."""
 
     label = str(path) if path else "config"
     for key in ("project", "model", "data", "lora", "sft", "dpo", "evaluation", "runtime", "smoke_test"):
@@ -70,8 +70,17 @@ def validate_config(config: Mapping[str, Any], path: Path | None = None) -> None
             raise ValueError(f"{label}: dpo.{key} must be positive")
     if float(dpo.get("beta", 0.0)) <= 0:
         raise ValueError(f"{label}: dpo.beta must be positive")
-    if int(config["evaluation"].get("samples", 0)) <= 0:
-        raise ValueError(f"{label}: evaluation.samples must be positive")
+    evaluation = config["evaluation"]
+    if not evaluation.get("output_dir"):
+        raise ValueError(f"{label}: evaluation.output_dir is required")
+    for key in ("samples", "max_new_tokens", "num_beams"):
+        if int(evaluation.get(key, 0)) <= 0:
+            raise ValueError(f"{label}: evaluation.{key} must be positive")
+    if bool(evaluation.get("do_sample", False)):
+        if float(evaluation.get("temperature", 0.0)) <= 0:
+            raise ValueError(f"{label}: sampled evaluation requires evaluation.temperature > 0")
+        if not 0.0 < float(evaluation.get("top_p", 0.0)) <= 1.0:
+            raise ValueError(f"{label}: sampled evaluation requires 0 < evaluation.top_p <= 1")
 
 
 def apply_runtime_overrides(
@@ -110,13 +119,11 @@ def apply_runtime_overrides(
             copied["data"]["validation_samples"] = int(config["smoke_test"]["validation_samples"])
             train_key = "data.train_samples"
             validation_key = "data.validation_samples"
-        copied["evaluation"]["samples"] = int(config["smoke_test"]["evaluation_samples"])
         overrides["applied"].update(
             {
                 f"{training_stage}.max_steps": copied[training_stage]["max_steps"],
                 train_key: copied["dpo"]["train_samples"] if training_stage == "dpo" else copied["data"]["train_samples"],
                 validation_key: copied["dpo"]["validation_samples"] if training_stage == "dpo" else copied["data"]["validation_samples"],
-                "evaluation.samples": copied["evaluation"]["samples"],
             }
         )
     if train_samples is not None:
@@ -133,9 +140,6 @@ def apply_runtime_overrides(
         else:
             copied["data"]["validation_samples"] = int(validation_samples)
             overrides["applied"]["data.validation_samples"] = int(validation_samples)
-    if eval_samples is not None:
-        copied["evaluation"]["samples"] = int(eval_samples)
-        overrides["applied"]["evaluation.samples"] = int(eval_samples)
     if max_steps is not None:
         copied[training_stage]["max_steps"] = int(max_steps)
         overrides["applied"][f"{training_stage}.max_steps"] = int(max_steps)

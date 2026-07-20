@@ -6,8 +6,9 @@
 
 ```text
 scripts/prepare_data.py  -> Stage 1 数据预处理
-sft/                     -> Stage 2 SFT 训练与 Base/SFT 评价
-dpo/                     -> Stage 3 DPO 训练与 Base/SFT/DPO 评价
+sft/                     -> Stage 2 SFT 训练
+dpo/                     -> Stage 3 DPO 训练
+evaluation/              -> Stage 4 Base/SFT/DPO 统一评价
 configs/                 -> YAML 配置加载
 ```
 
@@ -25,7 +26,7 @@ Stage 1 负责全部数据构造：
 - 分别使用 Mini 和 formal tokenizer 完成真实长度过滤；
 - 将最终数据保存到 `data/processed/`。
 
-Stage 2 和 Stage 3 只通过 `datasets.load_from_disk()` 加载本地数据。它们不再清洗、过滤、重排、补齐或重新构造样本。
+Stage 2、Stage 3 和 Stage 4 只通过 `datasets.load_from_disk()` 加载本地数据。它们不再清洗、过滤、重排、补齐或重新构造样本。
 
 ## 训练流
 
@@ -34,14 +35,21 @@ SFT：
 - 读取 `data/processed/<mode>/sft`；
 - 从本地 `model/` 目录加载配置指定的 Qwen 模型，缺失时从 ModelScope 下载；
 - 使用 TRL `SFTTrainer` 训练 LoRA/QLoRA adapter；
-- 保存 `adapter/`、`tokenizer/`、metrics、reload 样本和 Base/SFT 评价结果。
+- 保存 `adapter/`、`tokenizer/`、metrics 和 reload 样本。
 
 DPO：
 
 - 读取 `data/processed/<mode>/dpo`；
 - 从 Base + 已完成的 SFT adapter 初始化 policy；
 - 使用 TRL `DPOTrainer`，并设置 `ref_model=None`，由 TRL 创建 PEFT reference adapter；
-- 保存 DPO adapter、tokenizer、metrics、reload 样本和 Base/SFT/DPO 评价结果。
+- 保存 DPO adapter、tokenizer、metrics 和 reload 样本。
+
+Stage 4：
+
+- 读取 `data/processed/<mode>/evaluation`；
+- 校验 SFT 和 DPO run directory 的运行模式、模型身份和 adapter/tokenizer 产物；
+- 依次加载 Base、SFT adapter 和 DPO adapter；
+- 使用相同 prompt 和生成参数输出 `base_sft_dpo_predictions.jsonl`、`base_sft_dpo_summary.json`、正确样例和错误样例。
 
 ## 运行模式
 
@@ -62,7 +70,7 @@ Formal 模式：
 - 训练方式：QLoRA；
 - 数据：`data/processed/formal/*`。
 
-两种模式共用同一套 SFT 和 DPO 代码路径。设备差异应只来自 YAML 配置。
+两种模式共用同一套 SFT、DPO 和 Stage 4 评价代码路径。设备差异应只来自 YAML 配置。
 
 ## 已删除设计
 
