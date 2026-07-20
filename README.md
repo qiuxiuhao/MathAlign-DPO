@@ -232,6 +232,50 @@ python -m json.tool outputs/formal/sft/base_sft_summary.json
 python -m json.tool outputs/formal/dpo/base_sft_dpo_summary.json
 ```
 
+## 断点继续训练
+
+训练过程会按配置中的 `save_steps` 保存 `checkpoint-*`。如果训练中断，可以从某个 checkpoint 继续训练。
+
+注意：
+
+- 断点继续时不能加 `--overwrite`，代码会直接拒绝这种组合，避免误删原输出目录。
+- `--resume-from-checkpoint` 必须指向包含 `trainer_state.json` 的 checkpoint 目录。
+- `max_steps` 表示总训练步数。如果 checkpoint 已经达到原来的 `max_steps`，继续训练前需要在 YAML 中增大 `max_steps`，或通过 CLI 传入更大的 `--max-steps`。
+
+Mac Mini SFT 断点继续：
+
+```bash
+python -m sft.train \
+  --config configs/qwen25_0_5b_m5_24gb_mini.yaml \
+  --resume-from-checkpoint outputs/mini/sft/checkpoint-30
+```
+
+Mac Mini DPO 断点继续：
+
+```bash
+python -m dpo.train \
+  --config configs/qwen25_0_5b_m5_24gb_mini.yaml \
+  --sft-dir outputs/mini/sft \
+  --resume-from-checkpoint outputs/mini/dpo/checkpoint-20
+```
+
+RTX 4090 SFT 断点继续：
+
+```bash
+python -m sft.train \
+  --config configs/qwen25_3b_4090.yaml \
+  --resume-from-checkpoint outputs/formal/sft/checkpoint-300
+```
+
+RTX 4090 DPO 断点继续：
+
+```bash
+python -m dpo.train \
+  --config configs/qwen25_3b_4090.yaml \
+  --sft-dir outputs/formal/sft \
+  --resume-from-checkpoint outputs/formal/dpo/checkpoint-200
+```
+
 ## 当前实测状态
 
 - Stage 1 数据预处理已完成。
@@ -252,5 +296,6 @@ reports/stage_3_refactor_report.md
 - `data/raw/`、`data/processed/`、`model/` 和 `outputs/` 不应提交到 Git。
 - Stage 2 和 Stage 3 不负责重新构造数据。
 - `adapter/` 保存训练结束时的最新 adapter，`best_adapter/` 保存验证集 `eval_loss` 最低的 adapter。
+- `checkpoint-*` 用于断点继续训练，`adapter/` 和 `best_adapter/` 只保存 adapter 权重，不包含 optimizer 和 scheduler 状态。
 - DPO 会校验 SFT adapter 的运行模式和模型身份，避免 formal DPO 误用 Mini SFT adapter。
 - formal 配置要求 CUDA 设备名包含 `RTX 4090`。

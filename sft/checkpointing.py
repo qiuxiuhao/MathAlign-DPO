@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import json
 import shutil
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -18,12 +19,14 @@ class BestAdapterSaverCallback(TrainerCallback):
         adapter_dir: Path,
         metric_name: str = "eval_loss",
         selected_adapters: Sequence[str] | None = None,
+        initial_best_metric: float | None = None,
+        initial_best_step: int | None = None,
     ) -> None:
         self.adapter_dir = adapter_dir
         self.metric_name = metric_name
         self.selected_adapters = list(selected_adapters) if selected_adapters is not None else None
-        self.best_metric: float | None = None
-        self.best_step: int | None = None
+        self.best_metric = initial_best_metric
+        self.best_step = initial_best_step
 
     def on_evaluate(
         self,
@@ -53,7 +56,7 @@ class BestAdapterSaverCallback(TrainerCallback):
             "best_metric": self.best_metric,
             "best_step": self.best_step,
             "best_global_step": self.best_step,
-            "saved": self.best_metric is not None,
+            "saved": self.best_metric is not None and self.adapter_dir.exists(),
         }
 
 
@@ -71,6 +74,21 @@ def ensure_best_adapter_saved(
             callback.best_step = None
             save_adapter(model, callback.adapter_dir, selected_adapters=callback.selected_adapters)
     return callback.metadata()
+
+
+def load_existing_best_adapter_state(metrics_path: Path, adapter_dir: Path) -> dict[str, Any]:
+    """Read existing best-adapter metadata for resumed training."""
+
+    if not metrics_path.exists() or not adapter_dir.exists():
+        return {"best_metric": None, "best_step": None}
+    with metrics_path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    metric = payload.get("best_metric")
+    step = payload.get("best_step", payload.get("best_global_step"))
+    return {
+        "best_metric": float(metric) if metric is not None and math.isfinite(float(metric)) else None,
+        "best_step": int(step) if step is not None else None,
+    }
 
 
 def save_adapter(model: Any, adapter_dir: Path, selected_adapters: Sequence[str] | None = None) -> None:

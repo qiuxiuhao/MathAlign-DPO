@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from configs.load_config import apply_runtime_overrides, load_config
-from sft.checkpointing import BestAdapterSaverCallback, ensure_best_adapter_saved, save_adapter
+from sft.checkpointing import BestAdapterSaverCallback, ensure_best_adapter_saved, load_existing_best_adapter_state, save_adapter
 from sft.data import SFTDatasets, load_sft_datasets
 from sft.evaluate import evaluate_base_and_sft, write_json, write_jsonl
 from sft.modeling import load_lora_model_and_tokenizer, load_sft_for_generation, validate_runtime, validate_tokenizer
@@ -31,6 +31,7 @@ def main(argv: list[str] | None = None) -> None:
         eval_samples=args.eval_samples,
         max_steps=args.max_steps,
         overwrite=args.overwrite,
+        resume_from_checkpoint=args.resume_from_checkpoint,
     )
     print(json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True))
 
@@ -46,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--validation-samples", type=int, default=None, help="Use the first N validation rows for debugging.")
     parser.add_argument("--eval-samples", type=int, default=None, help="Use the first N evaluation rows for debugging.")
     parser.add_argument("--max-steps", type=int, default=None, help="Override SFT max_steps for debugging.")
+    parser.add_argument("--resume-from-checkpoint", default=None, help="Resume Trainer state from an existing checkpoint directory.")
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing output directory.")
     return parser
 
@@ -59,6 +61,7 @@ def train_sft(
     eval_samples: int | None = None,
     max_steps: int | None = None,
     overwrite: bool = False,
+    resume_from_checkpoint: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run SFT training, adapter reload validation, and Base/SFT evaluation."""
 
@@ -72,7 +75,8 @@ def train_sft(
         max_steps=max_steps,
     )
     out_dir = Path(output_dir) if output_dir is not None else Path(str(config["sft"]["output_dir"]))
-    prepare_output_dir(out_dir, overwrite=overwrite)
+    resume_path = resolve_resume_checkpoint(resume_from_checkpoint)
+    prepare_output_dir(out_dir, overwrite=overwrite, resume_from_checkpoint=resume_path)
     start = time.perf_counter()
     status_payload: dict[str, Any] = {}
     try:
@@ -84,7 +88,14 @@ def train_sft(
         )
         loaded = load_lora_model_and_tokenizer(config)
         tokenizer_metadata = validate_tokenizer(loaded.tokenizer)
-        train_metrics, eval_metrics, best_adapter = train_with_trl(config, loaded.model, loaded.tokenizer, datasets, out_dir)
+        train_metrics, eval_metrics, best_adapter = train_with_trl(
+            config,
+            loaded.model,
+            loaded.tokenizer,
+            datasets,
+            out_dir,
+            resume_from_checkpoint=resume_path,
+        )
         adapter_dir = out_dir / "adapter"
         tokenizer_dir = out_dir / "tokenizer"
         save_adapter(loaded.model, adapter_dir, selected_adapters=["default"])
@@ -114,6 +125,7 @@ def train_sft(
             "run_mode": str(config["project"]["run_mode"]),
             "output_dir": str(out_dir),
             "smoke_test": smoke_test,
+            "resume_from_checkpoint": str(resume_path) if resume_path is not None else None,
             "runtime_overrides": overrides,
             "runtime": runtime,
             "model": model_identity(config),
@@ -152,13 +164,20 @@ def train_with_trl(
     tokenizer: Any,
     datasets: SFTDatasets,
     output_dir: Path,
+    resume_from_checkpoint: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Train with TRL SFTTrainer using Stage 1 prompt/completion rows."""
 
     import trl
 
     args = sft_config(trl, config, output_dir)
-    best_callback = BestAdapterSaverCallback(output_dir / "best_adapter", selected_adapters=["default"])
+    existing_best = load_existing_best_adapter_state(output_dir / "best_adapter_metrics.json", output_dir / "best_adapter")
+    best_callback = BestAdapterSaverCallback(
+        output_dir / "best_adapter",
+        selected_adapters=["default"],
+        initial_best_metric=existing_best["best_metric"],
+        initial_best_step=existing_best["best_step"],
+    )
     trainer = trl.SFTTrainer(
         model=model,
         args=args,
@@ -167,7 +186,7 @@ def train_with_trl(
         processing_class=tokenizer,
         callbacks=[FiniteLossCallback(), best_callback],
     )
-    train_result = trainer.train()
+    train_result = trainer.train(resume_from_checkpoint=str(resume_from_checkpoint) if resume_from_checkpoint is not None else None)
     train_metrics = dict(getattr(train_result, "metrics", {}) or {})
     eval_metrics = dict(trainer.evaluate())
     trainer.save_state()
@@ -295,9 +314,29 @@ def model_identity(config: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def prepare_output_dir(path: Path, overwrite: bool) -> None:
+def resolve_resume_checkpoint(path: str | Path | None) -> Path | None:
+    """Validate an optional Trainer checkpoint path."""
+
+    if path is None:
+        return None
+    checkpoint = Path(path)
+    if not checkpoint.exists():
+        raise FileNotFoundError(f"Resume checkpoint does not exist: {checkpoint}")
+    if not checkpoint.is_dir():
+        raise ValueError(f"Resume checkpoint must be a directory: {checkpoint}")
+    if not (checkpoint / "trainer_state.json").exists():
+        raise FileNotFoundError(f"Resume checkpoint is missing trainer_state.json: {checkpoint}")
+    return checkpoint
+
+
+def prepare_output_dir(path: Path, overwrite: bool, resume_from_checkpoint: Path | None = None) -> None:
     """Create an output directory with collision protection."""
 
+    if resume_from_checkpoint is not None:
+        if overwrite:
+            raise ValueError("--overwrite cannot be used with --resume-from-checkpoint")
+        path.mkdir(parents=True, exist_ok=True)
+        return
     if path.exists() and any(path.iterdir()):
         if not overwrite:
             raise FileExistsError(f"Refusing to overwrite non-empty SFT output directory: {path}")
