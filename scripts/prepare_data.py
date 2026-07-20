@@ -1,8 +1,8 @@
-"""Stage 1 all-in-one data preprocessing entrypoint.
+"""Stage 1 preprocessing for Math-Step-DPO-10K.
 
-This script intentionally owns the Stage 1 data path during the refactor. It
-does not import ``mathalign_dpo.data`` because that old Stage 1/2 JSONL pipeline
-has been removed in this stage.
+This entrypoint builds the final Hugging Face Datasets consumed by SFT, DPO,
+and Stage 4 evaluation. It intentionally stops using the old NuminaMath
+solution-parsing and step-mutation data path.
 """
 
 from __future__ import annotations
@@ -15,29 +15,17 @@ import shutil
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 
-SCHEMA_VERSION = "1.0"
-SOURCE_ID_FIELDS = ("id", "source_id", "problem_id", "question_id", "uuid", "uid")
-PROBLEM_FIELDS = ("problem", "question", "prompt")
-SOLUTION_FIELDS = ("solution", "answer", "response")
-SPLITS = ("train", "validation", "evaluation")
-NUMBER_MUTATION = "number_mutation"
-OPERATOR_MUTATION = "operator_mutation"
-MIXED_MUTATION = "mixed"
-DPO_CONFIDENCES = {"high", "medium"}
-ANSWER_METHOD_NONE = "none"
-_NUMBER_RE = re.compile(r"\\frac\{[-+]?\d+\}\{[-+]?\d+\}|[-+]?\d+\s*/\s*[-+]?\d+|[-+]?\d+(?:\.\d+)?")
-_OPERATOR_RE = re.compile(r"\\times|\\cdot|\\div|\\le|\\ge|[+\-*/=<>]")
+SCHEMA_VERSION = "2.0"
+REQUIRED_FIELDS = ("prompt", "initial_reason_steps", "full_chosen", "full_rejected", "answer")
+MODEL_INPUT_SUFFIX = "Let's think step by step."
 
 
 @dataclass(frozen=True)
 class ProjectConfigs:
-    """The two approved configs plus their file paths."""
-
     mini_path: Path
     formal_path: Path
     mini: dict[str, Any]
@@ -62,55 +50,35 @@ class ProjectConfigs:
 
 @dataclass(frozen=True)
 class Tokenizers:
-    """The tokenizer pair used for final Stage 1 length filtering."""
-
     mini: Any
     formal: Any
     metadata: dict[str, Any]
 
 
 @dataclass(frozen=True)
-class MutationResult:
-    """A deterministic rule-based mutation result."""
-
-    strategy: str
-    text: str
-    changed_span: tuple[int, int] | None
-    replacement: str | None
-    success: bool
-    reason: str
-
-
-@dataclass(frozen=True)
-class AnswerExtraction:
-    """Final answer extraction result."""
-
-    answer: str | None
-    method: str
-    confidence: str
-
-
-@dataclass(frozen=True)
-class ParsedSolution:
-    """Parsed reasoning steps and answer metadata."""
-
-    steps: list[str]
-    final_answer: str | None
-    answer_method: str
-    answer_confidence: str
-    answer_candidate: str | None
-    parse_status: str
-    failure_reason: str | None
+class PreparedExample:
+    raw_row_index: int
+    source_id: str
+    split_key: str
+    normalized_prompt: str
+    model_input: str
+    full_positive: str
+    full_negative: str
+    answer: str
+    source_dataset: str | None
+    sft_token_count: int
+    dpo_token_count: dict[str, int]
+    evaluation_prompt_token_count: int
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Prepare Stage 1 final Hugging Face Datasets.")
+    parser = argparse.ArgumentParser(description="Prepare Math-Step-DPO-10K Stage 1 final Datasets.")
     parser.add_argument("--mini-config", required=True, help="Path to the Mini YAML config.")
     parser.add_argument("--formal-config", required=True, help="Path to the formal YAML config.")
     parser.add_argument("--smoke-test", action="store_true", help="Use deterministic smoke-test target counts.")
     parser.add_argument("--output-dir", default=None, help="Override processed output directory.")
     parser.add_argument("--overwrite", action="store_true", help="Allow replacing existing processed outputs.")
-    parser.add_argument("--refresh-raw", action="store_true", help="Redownload and replace data/raw/numina_math.")
+    parser.add_argument("--refresh-raw", action="store_true", help="Redownload and replace data/raw/Math-Step-DPO-10K.")
     args = parser.parse_args()
 
     result = prepare_data(
@@ -132,15 +100,13 @@ def prepare_data(
     overwrite: bool = False,
     refresh_raw: bool = False,
 ) -> dict[str, Any]:
-    """Run Stage 1 preprocessing and publish final Dataset directories."""
-
     datasets = _import_datasets()
     configs = load_project_configs(mini_config, formal_config)
     mini = _config_with_smoke_counts(configs.mini) if smoke_test else configs.mini
     formal = _config_with_smoke_counts(configs.formal) if smoke_test else configs.formal
     raw_path = _raw_dataset_path(configs.formal)
-    processed_root = Path(output_dir) if output_dir else Path(str(configs.formal["data"]["processed_dir"]))
-    _prepare_processed_root(processed_root, overwrite)
+    processed_root = Path(output_dir) if output_dir else Path(str(formal["data"]["processed_dir"]))
+    _prepare_output_root(processed_root, overwrite)
 
     raw = load_or_download_raw_dataset(
         datasets=datasets,
@@ -151,26 +117,24 @@ def prepare_data(
         refresh_raw=refresh_raw,
         overwrite=overwrite,
     )
-    raw_source_rows = len(raw)
-    if smoke_test:
-        raw = raw.select(range(min(len(raw), _smoke_source_rows(formal))))
-
-    normalized = normalize_dataset(raw, configs)
+    raw_rows = _dataset_rows(raw)
     tokenizers = load_tokenizers(mini, formal)
-    build = build_final_datasets(datasets, normalized, configs, mini, formal, tokenizers)
+    build = build_final_datasets(datasets, raw_rows, configs, mini, formal, tokenizers)
     save_final_datasets(build["datasets"], processed_root)
+
     metadata = build_metadata(
         configs=configs,
         mini=mini,
         formal=formal,
         raw_path=raw_path,
         processed_root=processed_root,
-        raw_source_rows=raw_source_rows,
+        raw_source_rows=len(raw_rows),
         smoke_test=smoke_test,
         tokenizers=tokenizers,
         statistics=build["statistics"],
     )
     _write_json(processed_root / "metadata.json", metadata)
+    _write_json(processed_root / "split_manifest.json", build["split_manifest"])
     return {
         "status": "completed",
         "stage": 1,
@@ -178,13 +142,12 @@ def prepare_data(
         "raw_dataset_path": str(raw_path),
         "processed_dir": str(processed_root),
         "actual_counts": metadata["actual_counts"],
+        "shortfall_counts": metadata["shortfall_counts"],
         "filter_counts_by_reason": metadata["filter_counts_by_reason"],
     }
 
 
 def load_project_configs(mini_config: str | Path, formal_config: str | Path) -> ProjectConfigs:
-    """Load the Mini/formal YAML pair without using the old config module."""
-
     mini_path = Path(mini_config)
     formal_path = Path(formal_config)
     mini = _load_yaml(mini_path)
@@ -202,451 +165,317 @@ def load_or_download_raw_dataset(
     refresh_raw: bool,
     overwrite: bool,
 ) -> Any:
-    """Load local raw Dataset, or download and persist it once."""
-
     if raw_path.exists() and not refresh_raw:
-        return datasets.load_from_disk(str(raw_path))
-    if raw_path.exists():
-        if not overwrite:
-            raise FileExistsError(f"Refusing to replace raw dataset without --overwrite: {raw_path}")
-        shutil.rmtree(raw_path)
-    raw_path.parent.mkdir(parents=True, exist_ok=True)
-    dataset = datasets.load_dataset(dataset_name, revision=dataset_revision, split=source_split)
-    dataset.save_to_disk(str(raw_path))
-    return dataset
-
-
-def normalize_dataset(raw: Any, configs: ProjectConfigs) -> Any:
-    """Normalize raw fields, assign deterministic split/rank, and filter invalid rows."""
-
-    problem_field = _first_present(raw.column_names, PROBLEM_FIELDS, "problem")
-    solution_field = _first_present(raw.column_names, SOLUTION_FIELDS, "solution")
-    id_field = next((field for field in SOURCE_ID_FIELDS if field in raw.column_names), None)
-    preprocessing = configs.formal["preprocessing"]
-    ratios = split_ratios(configs.formal)
-
-    def normalize_batch(batch: Mapping[str, list[Any]], indices: list[int]) -> dict[str, list[Any]]:
-        output: dict[str, list[Any]] = {
-            "schema_version": [],
-            "id": [],
-            "source_id": [],
-            "problem": [],
-            "solution": [],
-            "split": [],
-            "rank": [],
-            "is_valid": [],
-            "filter_reason": [],
-            "metadata": [],
-        }
-        for offset, row_index in enumerate(indices):
-            problem = batch[problem_field][offset]
-            solution = batch[solution_field][offset]
-            raw_source_id = build_source_id(batch, offset, row_index, id_field)
-            source_id = f"{raw_source_id}_{row_index:08d}" if id_field else raw_source_id
-            stable_id = f"numina_{configs.source_split}_{source_id}"
-            normalized_problem = normalize_text(problem, preprocessing) if isinstance(problem, str) else ""
-            normalized_solution = normalize_text(solution, preprocessing) if isinstance(solution, str) else ""
-            reason = _normalization_filter_reason(problem, solution, normalized_problem, normalized_solution)
-            split = assign_split(
-                source_id=source_id,
-                dataset_name=configs.dataset_name,
-                dataset_revision=configs.dataset_revision,
-                source_split=configs.source_split,
-                seed=configs.seed,
-                ratios=ratios,
-            )
-            output["schema_version"].append(SCHEMA_VERSION)
-            output["id"].append(stable_id)
-            output["source_id"].append(source_id)
-            output["problem"].append(normalized_problem)
-            output["solution"].append(normalized_solution)
-            output["split"].append(split)
-            output["rank"].append(stable_rank(configs, source_id, split))
-            output["is_valid"].append(reason is None)
-            output["filter_reason"].append(reason or "")
-            output["metadata"].append(
-                {
-                    "source": configs.dataset_name,
-                    "source_split": configs.source_split,
-                    "raw_source_id": raw_source_id,
-                    "source_subset": _batch_value(batch, "source", offset),
-                    "original_fields": list(raw.column_names),
-                }
-            )
-        return output
-
-    normalized = raw.map(
-        normalize_batch,
-        with_indices=True,
-        batched=True,
-        batch_size=1000,
-        remove_columns=raw.column_names,
-        desc="normalize fields and assign deterministic splits",
-    )
-    return normalized.filter(lambda row: bool(row["is_valid"]), desc="filter invalid normalized rows")
+        loaded = datasets.load_from_disk(str(raw_path))
+    else:
+        if raw_path.exists():
+            if not overwrite:
+                raise FileExistsError(f"Refusing to replace raw dataset without --overwrite: {raw_path}")
+            shutil.rmtree(raw_path)
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        loaded = datasets.load_dataset(dataset_name, revision=dataset_revision, split=source_split)
+        loaded.save_to_disk(str(raw_path))
+    if isinstance(loaded, datasets.DatasetDict):
+        if source_split not in loaded:
+            raise ValueError(f"Raw DatasetDict missing configured split {source_split!r}: {raw_path}")
+        return loaded[source_split]
+    return loaded
 
 
 def build_final_datasets(
     datasets: Any,
-    normalized: Any,
+    raw_rows: Sequence[Mapping[str, Any]],
     configs: ProjectConfigs,
     mini: Mapping[str, Any],
     formal: Mapping[str, Any],
     tokenizers: Tokenizers,
 ) -> dict[str, Any]:
-    """Build formal datasets first, then deterministic Mini subsets."""
-
     counters: dict[str, Counter[str]] = {
-        "normalization": Counter(),
-        "sft_mini": Counter(),
-        "sft_formal": Counter(),
-        "dpo_mini": Counter(),
-        "dpo_formal": Counter(),
-        "evaluation_mini": Counter(),
-        "evaluation_formal": Counter(),
+        "field_filter": Counter(),
+        "dedupe": Counter(),
+        "formal_length": Counter(),
+        "mini_length": Counter(),
     }
-    formal_sft = {
-        "train": collect_sft_rows(
-            normalized,
-            "train",
-            formal,
-            tokenizers.formal,
-            int(formal["data"]["train_samples"]),
-            counters["sft_formal"],
-            prefix_config=mini,
-            prefix_tokenizer=tokenizers.mini,
-            prefix_count=int(mini["data"]["train_samples"]),
-        ),
-        "validation": collect_sft_rows(
-            normalized,
-            "validation",
-            formal,
-            tokenizers.formal,
-            int(formal["data"]["validation_samples"]),
-            counters["sft_formal"],
-            prefix_config=mini,
-            prefix_tokenizer=tokenizers.mini,
-            prefix_count=int(mini["data"]["validation_samples"]),
-        ),
+    prepared = prepare_formal_examples(raw_rows, configs, formal, tokenizers.formal, counters)
+    targets = target_counts(formal)
+    train_count = min(int(targets["sft"]["train"]), len(prepared))
+    validation_start = train_count
+    validation_count = min(int(targets["sft"]["validation"]), max(0, len(prepared) - validation_start))
+    evaluation_start = validation_start + validation_count
+    evaluation_count = min(int(targets["evaluation"]), max(0, len(prepared) - evaluation_start))
+    reserve_start = evaluation_start + evaluation_count
+    formal_examples = {
+        "train": prepared[:train_count],
+        "validation": prepared[validation_start:evaluation_start],
+        "evaluation": prepared[evaluation_start:reserve_start],
+        "reserve": prepared[reserve_start:],
     }
-    formal_dpo = {
-        "train": collect_dpo_rows(
-            normalized,
-            "train",
-            formal,
-            tokenizers.formal,
-            int(formal["dpo"]["train_samples"]),
-            counters["dpo_formal"],
-            prefix_config=mini,
-            prefix_tokenizer=tokenizers.mini,
-            prefix_count=int(mini["dpo"]["train_samples"]),
-        ),
-        "validation": collect_dpo_rows(
-            normalized,
-            "validation",
-            formal,
-            tokenizers.formal,
-            int(formal["dpo"]["validation_samples"]),
-            counters["dpo_formal"],
-            prefix_config=mini,
-            prefix_tokenizer=tokenizers.mini,
-            prefix_count=int(mini["dpo"]["validation_samples"]),
-        ),
-    }
-    formal_eval = collect_evaluation_rows(
-        normalized,
-        formal,
-        tokenizers.formal,
-        int(formal["evaluation"]["samples"]),
-        counters["evaluation_formal"],
-        prefix_config=mini,
-        prefix_tokenizer=tokenizers.mini,
-        prefix_count=int(mini["evaluation"]["samples"]),
-    )
 
-    mini_sft = {
-        "train": refilter_mode_rows(formal_sft["train"], "sft", mini, tokenizers.mini, int(mini["data"]["train_samples"]), counters["sft_mini"]),
-        "validation": refilter_mode_rows(
-            formal_sft["validation"],
-            "sft",
-            mini,
-            tokenizers.mini,
-            int(mini["data"]["validation_samples"]),
-            counters["sft_mini"],
-        ),
-    }
-    mini_dpo = {
-        "train": refilter_mode_rows(formal_dpo["train"], "dpo", mini, tokenizers.mini, int(mini["dpo"]["train_samples"]), counters["dpo_mini"]),
-        "validation": refilter_mode_rows(
-            formal_dpo["validation"],
-            "dpo",
-            mini,
-            tokenizers.mini,
-            int(mini["dpo"]["validation_samples"]),
-            counters["dpo_mini"],
-        ),
-    }
-    mini_eval = refilter_mode_rows(
-        formal_eval,
-        "evaluation",
-        mini,
-        tokenizers.mini,
-        int(mini["evaluation"]["samples"]),
-        counters["evaluation_mini"],
-    )
-
+    formal_rows = build_mode_rows(formal_examples, formal, tokenizers.formal)
+    mini_rows = build_mini_rows(formal_examples, mini, tokenizers.mini, counters["mini_length"])
     final = {
-        "formal": {
-            "sft": datasets.DatasetDict({split: datasets.Dataset.from_list(rows) for split, rows in formal_sft.items()}),
-            "dpo": datasets.DatasetDict({split: datasets.Dataset.from_list(rows) for split, rows in formal_dpo.items()}),
-            "evaluation": datasets.Dataset.from_list(formal_eval),
-        },
-        "mini": {
-            "sft": datasets.DatasetDict({split: datasets.Dataset.from_list(rows) for split, rows in mini_sft.items()}),
-            "dpo": datasets.DatasetDict({split: datasets.Dataset.from_list(rows) for split, rows in mini_dpo.items()}),
-            "evaluation": datasets.Dataset.from_list(mini_eval),
-        },
+        "formal": formal_rows,
+        "mini": mini_rows,
     }
     assert_mini_prefix(final)
+    split_manifest = build_split_manifest(formal_examples, configs, prepared_count=len(prepared))
     return {
-        "datasets": final,
+        "datasets": {
+            "formal": dataset_objects(datasets, formal_rows),
+            "mini": dataset_objects(datasets, mini_rows),
+        },
+        "split_manifest": split_manifest,
         "statistics": {
             "actual_counts": dataset_counts(final),
+            "shortfall_counts": shortfall_counts(final, mini, formal),
             "filter_counts_by_reason": {key: dict(sorted(value.items())) for key, value in counters.items()},
         },
     }
 
 
-def collect_sft_rows(
-    normalized: Any,
-    split: str,
-    config: Mapping[str, Any],
+def prepare_formal_examples(
+    raw_rows: Sequence[Mapping[str, Any]],
+    configs: ProjectConfigs,
+    formal: Mapping[str, Any],
     tokenizer: Any,
-    target_count: int,
-    counters: Counter[str],
-    prefix_config: Mapping[str, Any] | None = None,
-    prefix_tokenizer: Any | None = None,
-    prefix_count: int = 0,
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for row in iter_split_rows(normalized, split):
-        parsed = parse_solution(str(row["solution"]), int(config["preprocessing"]["minimum_steps"]))
-        if parsed.parse_status not in {"success", "partial"}:
-            counters[f"parse_{parsed.parse_status}"] += 1
+    counters: Mapping[str, Counter[str]],
+) -> list[PreparedExample]:
+    by_prompt: dict[str, list[tuple[str, int, Mapping[str, Any], dict[str, str]]]] = {}
+    for raw_index, row in enumerate(raw_rows):
+        fields, reason = normalize_raw_fields(row, formal["preprocessing"])
+        if reason is not None:
+            counters["field_filter"][reason] += 1
             continue
-        messages = base_messages(str(row["problem"]), config)
-        messages.append(assistant_message(str(row["solution"])))
-        token_count = count_chat_tokens(tokenizer, messages, add_generation_prompt=False)
-        if token_count > int(config["model"]["max_length"]):
-            counters["token_too_long"] += 1
+        normalized_prompt = normalize_prompt_for_dedupe(fields["prompt"])
+        if not normalized_prompt:
+            counters["field_filter"]["empty_normalized_prompt"] += 1
             continue
-        if prefix_tokenizer is not None and prefix_config is not None and len(rows) < prefix_count:
-            prefix_token_count = count_chat_tokens(prefix_tokenizer, messages, add_generation_prompt=False)
-            if prefix_token_count > int(prefix_config["model"]["max_length"]):
-                counters["mini_prefix_token_too_long"] += 1
-                continue
-        rows.append(
-            {
-                "schema_version": SCHEMA_VERSION,
-                "id": f"{row['id']}_sft",
-                "source_id": str(row["id"]),
-                "prompt": messages[:2],
-                "completion": [messages[2]],
-                "messages": messages,
-                "token_count": token_count,
-                "split": split,
-                "metadata": {
-                    "final_answer": parsed.final_answer,
-                    "parse_status": parsed.parse_status,
-                    "answer_confidence": parsed.answer_confidence,
-                    "raw_source_id": row["metadata"]["raw_source_id"],
-                },
-            }
+        sort_key = stable_row_key(configs, normalized_prompt, raw_index)
+        by_prompt.setdefault(normalized_prompt, []).append((sort_key, raw_index, row, fields))
+
+    representatives: list[tuple[str, int, Mapping[str, Any], dict[str, str], str]] = []
+    for normalized_prompt, candidates in by_prompt.items():
+        candidates.sort(key=lambda item: item[0])
+        counters["dedupe"]["duplicate_prompt_rows"] += max(0, len(candidates) - 1)
+        sort_key, raw_index, row, fields = candidates[0]
+        representatives.append((sort_key, raw_index, row, fields, normalized_prompt))
+
+    prepared: list[PreparedExample] = []
+    for _sort_key, raw_index, row, fields, normalized_prompt in representatives:
+        source_id = hash_text(normalized_prompt)
+        model_input = f"{fields['prompt']}\n\n{MODEL_INPUT_SUFFIX}"
+        full_positive = join_reasoning(fields["initial_reason_steps"], fields["full_chosen"])
+        full_negative = join_reasoning(fields["initial_reason_steps"], fields["full_rejected"])
+        prompt_messages = base_messages(model_input, formal)
+        sft_messages = [*prompt_messages, assistant_message(full_positive)]
+        dpo_pair = {
+            "prompt": prompt_messages,
+            "chosen": [assistant_message(full_positive)],
+            "rejected": [assistant_message(full_negative)],
+        }
+        sft_token_count = count_chat_tokens(tokenizer, sft_messages, add_generation_prompt=False)
+        if sft_token_count > int(formal["model"]["max_length"]):
+            counters["formal_length"]["sft_too_long"] += 1
+            continue
+        dpo_token_count = count_dpo_tokens(tokenizer, dpo_pair)
+        dpo_reason = dpo_length_filter_reason(dpo_token_count, formal)
+        if dpo_reason is not None:
+            counters["formal_length"][dpo_reason] += 1
+            continue
+        evaluation_prompt_token_count = count_chat_tokens(tokenizer, prompt_messages, add_generation_prompt=True)
+        if evaluation_prompt_token_count > int(formal["model"]["max_length"]):
+            counters["formal_length"]["evaluation_prompt_too_long"] += 1
+            continue
+        split_key = stable_split_key(configs, normalized_prompt)
+        prepared.append(
+            PreparedExample(
+                raw_row_index=raw_index,
+                source_id=source_id,
+                split_key=split_key,
+                normalized_prompt=normalized_prompt,
+                model_input=model_input,
+                full_positive=full_positive,
+                full_negative=full_negative,
+                answer=fields["answer"],
+                source_dataset=str(row.get("dataset")) if row.get("dataset") is not None else None,
+                sft_token_count=sft_token_count,
+                dpo_token_count=dpo_token_count,
+                evaluation_prompt_token_count=evaluation_prompt_token_count,
+            )
         )
-        if len(rows) >= target_count:
-            return rows
-    raise ValueError(f"Not enough {split} SFT rows after Stage 1 filtering: need {target_count}, got {len(rows)}")
+    prepared.sort(key=lambda item: item.split_key)
+    return prepared
 
 
-def collect_dpo_rows(
-    normalized: Any,
-    split: str,
+def normalize_raw_fields(row: Mapping[str, Any], preprocessing: Mapping[str, Any]) -> tuple[dict[str, str], str | None]:
+    fields: dict[str, str] = {}
+    for key in REQUIRED_FIELDS:
+        value = row.get(key)
+        if not isinstance(value, str):
+            return {}, f"{key}_not_string"
+        normalized = normalize_text(value, preprocessing)
+        if not normalized:
+            return {}, f"{key}_empty"
+        fields[key] = normalized
+    initial = fields["initial_reason_steps"]
+    for key in ("full_chosen", "full_rejected"):
+        if starts_with_normalized(fields[key], initial):
+            return {}, f"{key}_duplicated_initial_reason_steps"
+    positive = join_reasoning(initial, fields["full_chosen"])
+    negative = join_reasoning(initial, fields["full_rejected"])
+    if normalize_for_comparison(positive) == normalize_for_comparison(negative):
+        return {}, "full_positive_equals_full_negative"
+    return fields, None
+
+
+def build_mode_rows(
+    examples: Mapping[str, Sequence[PreparedExample]],
     config: Mapping[str, Any],
     tokenizer: Any,
-    target_count: int,
+) -> dict[str, Any]:
+    sft = {
+        split: [build_sft_row(example, split, index, tokenizer, config) for index, example in enumerate(examples[split])]
+        for split in ("train", "validation")
+    }
+    dpo = {
+        split: [build_dpo_row(example, split, index, tokenizer, config) for index, example in enumerate(examples[split])]
+        for split in ("train", "validation")
+    }
+    evaluation = [build_evaluation_row(example, index, tokenizer, config) for index, example in enumerate(examples["evaluation"])]
+    reserve = [build_reserve_row(example, index, tokenizer) for index, example in enumerate(examples.get("reserve", []))]
+    return {"sft": sft, "dpo": dpo, "evaluation": evaluation, "reserve": reserve}
+
+
+def build_mini_rows(
+    formal_examples: Mapping[str, Sequence[PreparedExample]],
+    mini: Mapping[str, Any],
+    tokenizer: Any,
     counters: Counter[str],
-    prefix_config: Mapping[str, Any] | None = None,
-    prefix_tokenizer: Any | None = None,
-    prefix_count: int = 0,
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    seed = int(config["project"]["seed"])
-    offsets = [int(offset) for offset in config["negative_sampling"]["number_offset_choices"]]
-    strategy = str(config["negative_sampling"]["strategy"])
-    for row in iter_split_rows(normalized, split):
-        parsed = parse_solution(str(row["solution"]), int(config["preprocessing"]["minimum_steps"]))
-        if parsed.parse_status != "success":
-            counters[f"parse_{parsed.parse_status}"] += 1
-            continue
-        if not parsed.final_answer:
-            counters["missing_final_answer"] += 1
-            continue
-        if parsed.answer_confidence not in DPO_CONFIDENCES:
-            counters[f"answer_confidence_{parsed.answer_confidence}"] += 1
-            continue
-        for step_index, chosen_step in enumerate(parsed.steps):
-            result = mutate_step(chosen_step, str(row["source_id"]), step_index, strategy, seed, offsets)
-            if not result.success:
-                counters[result.reason] += 1
-                continue
-            rejected_step = result.text
-            if chosen_step.strip() == rejected_step.strip():
-                counters["unchanged_output"] += 1
-                continue
-            prompt = base_messages(str(row["problem"]), config)
-            prompt.extend(assistant_message(step) for step in parsed.steps[:step_index])
-            if rejected_step in "\n".join(message["content"] for message in prompt):
-                counters["rejected_in_prompt_history"] += 1
-                continue
-            pair = {
-                "schema_version": SCHEMA_VERSION,
-                "id": f"{row['id']}_step_{step_index:03d}_{result.strategy}",
-                "source_id": str(row["id"]),
-                "step_index": step_index,
-                "prompt": prompt,
-                "chosen": [assistant_message(chosen_step)],
-                "rejected": [assistant_message(rejected_step)],
-                "split": split,
-                "metadata": {
-                    "final_answer": parsed.final_answer,
-                    "answer_confidence": parsed.answer_confidence,
-                    "negative_strategy": strategy,
-                    "mutation": mutation_metadata(result, strategy),
-                    "raw_source_id": row["metadata"]["raw_source_id"],
+) -> dict[str, Any]:
+    targets = target_counts(mini)
+    mini_examples = {
+        "train": list(formal_examples["train"][: min(int(targets["sft"]["train"]), len(formal_examples["train"]))]),
+        "validation": list(formal_examples["validation"][: min(int(targets["sft"]["validation"]), len(formal_examples["validation"]))]),
+        "evaluation": list(formal_examples["evaluation"][: min(int(targets["evaluation"]), len(formal_examples["evaluation"]))]),
+    }
+    for split in ("train", "validation"):
+        for example in mini_examples[split]:
+            sft_count = count_chat_tokens(tokenizer, [*base_messages(example.model_input, mini), assistant_message(example.full_positive)], False)
+            if sft_count > int(mini["model"]["max_length"]):
+                counters[f"sft_{split}_prefix_too_long"] += 1
+                raise ValueError(f"Mini {split} prefix row exceeds SFT max_length: {example.source_id}")
+            dpo_count = count_dpo_tokens(
+                tokenizer,
+                {
+                    "prompt": base_messages(example.model_input, mini),
+                    "chosen": [assistant_message(example.full_positive)],
+                    "rejected": [assistant_message(example.full_negative)],
                 },
-            }
-            token_count = count_dpo_tokens(tokenizer, pair)
-            reason = dpo_length_filter_reason(token_count, config)
+            )
+            reason = dpo_length_filter_reason(dpo_count, mini)
             if reason is not None:
-                counters[reason] += 1
-                continue
-            if prefix_tokenizer is not None and prefix_config is not None and len(rows) < prefix_count:
-                prefix_token_count = count_dpo_tokens(prefix_tokenizer, pair)
-                prefix_reason = dpo_length_filter_reason(prefix_token_count, prefix_config)
-                if prefix_reason is not None:
-                    counters[f"mini_prefix_{prefix_reason}"] += 1
-                    continue
-            pair["token_count"] = token_count
-            rows.append(pair)
-            if len(rows) >= target_count:
-                return rows
-    raise ValueError(f"Not enough {split} DPO rows after Stage 1 filtering: need {target_count}, got {len(rows)}")
+                counters[f"dpo_{split}_{reason}"] += 1
+                raise ValueError(f"Mini {split} prefix row fails DPO length filter {reason}: {example.source_id}")
+    for example in mini_examples["evaluation"]:
+        prompt_tokens = count_chat_tokens(tokenizer, base_messages(example.model_input, mini), add_generation_prompt=True)
+        if prompt_tokens > int(mini["model"]["max_length"]):
+            counters["evaluation_prompt_too_long"] += 1
+            raise ValueError(f"Mini evaluation prefix row exceeds prompt max_length: {example.source_id}")
+    return build_mode_rows(mini_examples, mini, tokenizer)
 
 
-def collect_evaluation_rows(
-    normalized: Any,
-    config: Mapping[str, Any],
-    tokenizer: Any,
-    target_count: int,
-    counters: Counter[str],
-    prefix_config: Mapping[str, Any] | None = None,
-    prefix_tokenizer: Any | None = None,
-    prefix_count: int = 0,
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for row in iter_split_rows(normalized, "evaluation"):
-        parsed = parse_solution(str(row["solution"]), int(config["preprocessing"]["minimum_steps"]))
-        if parsed.parse_status != "success" or not parsed.final_answer:
-            counters[f"parse_{parsed.parse_status}"] += 1
-            continue
-        prompt_messages = base_messages(str(row["problem"]), config)
-        prompt_token_count = count_chat_tokens(tokenizer, prompt_messages, add_generation_prompt=True)
-        if prompt_token_count + int(config["evaluation"]["max_new_tokens"]) > int(config["model"]["max_length"]):
-            counters["prompt_plus_generation_too_long"] += 1
-            continue
-        if prefix_tokenizer is not None and prefix_config is not None and len(rows) < prefix_count:
-            prefix_token_count = count_chat_tokens(prefix_tokenizer, prompt_messages, add_generation_prompt=True)
-            if prefix_token_count + int(prefix_config["evaluation"]["max_new_tokens"]) > int(prefix_config["model"]["max_length"]):
-                counters["mini_prefix_prompt_plus_generation_too_long"] += 1
-                continue
-        rows.append(
-            {
-                "schema_version": SCHEMA_VERSION,
-                "id": str(row["id"]),
-                "source_id": str(row["id"]),
-                "problem": str(row["problem"]),
-                "reference_answer": str(parsed.final_answer),
-                "prompt_messages": prompt_messages,
-                "prompt_token_count": prompt_token_count,
-                "split": "evaluation",
-                "metadata": {
-                    "answer_confidence": parsed.answer_confidence,
-                    "answer_extraction_method": parsed.answer_method,
-                    "raw_source_id": row["metadata"]["raw_source_id"],
-                },
-            }
-        )
-        if len(rows) >= target_count:
-            return rows
-    raise ValueError(f"Not enough evaluation rows after Stage 1 filtering: need {target_count}, got {len(rows)}")
+def build_sft_row(example: PreparedExample, split: str, index: int, tokenizer: Any, config: Mapping[str, Any]) -> dict[str, Any]:
+    prompt = base_messages(example.model_input, config)
+    completion = [assistant_message(example.full_positive)]
+    messages = [*prompt, *completion]
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "id": f"math_step_dpo_{split}_{index:05d}_sft",
+        "source_id": example.source_id,
+        "prompt": prompt,
+        "completion": completion,
+        "messages": messages,
+        "token_count": count_chat_tokens(tokenizer, messages, add_generation_prompt=False),
+        "split": split,
+        "metadata": common_metadata(example),
+    }
 
 
-def refilter_mode_rows(
-    rows: Sequence[Mapping[str, Any]],
-    kind: str,
-    config: Mapping[str, Any],
-    tokenizer: Any,
-    target_count: int,
-    counters: Counter[str],
-) -> list[dict[str, Any]]:
-    """Recompute Mini token counts against the Mini tokenizer while preserving formal order."""
-
-    selected: list[dict[str, Any]] = []
-    for row in rows:
-        copied = json.loads(json.dumps(row, ensure_ascii=False))
-        if kind == "sft":
-            token_count = count_chat_tokens(tokenizer, copied["messages"], add_generation_prompt=False)
-            if token_count > int(config["model"]["max_length"]):
-                counters["token_too_long"] += 1
-                continue
-            copied["token_count"] = token_count
-        elif kind == "dpo":
-            token_count = count_dpo_tokens(tokenizer, copied)
-            reason = dpo_length_filter_reason(token_count, config)
-            if reason is not None:
-                counters[reason] += 1
-                continue
-            copied["token_count"] = token_count
-        elif kind == "evaluation":
-            token_count = count_chat_tokens(tokenizer, copied["prompt_messages"], add_generation_prompt=True)
-            if token_count + int(config["evaluation"]["max_new_tokens"]) > int(config["model"]["max_length"]):
-                counters["prompt_plus_generation_too_long"] += 1
-                continue
-            copied["prompt_token_count"] = token_count
-        else:
-            raise ValueError(f"Unsupported final dataset kind: {kind}")
-        selected.append(copied)
-        if len(selected) >= target_count:
-            return selected
-    raise ValueError(f"Not enough Mini {kind} rows from formal prefix after token filtering: need {target_count}, got {len(selected)}")
+def build_dpo_row(example: PreparedExample, split: str, index: int, tokenizer: Any, config: Mapping[str, Any]) -> dict[str, Any]:
+    prompt = base_messages(example.model_input, config)
+    chosen = [assistant_message(example.full_positive)]
+    rejected = [assistant_message(example.full_negative)]
+    pair = {"prompt": prompt, "chosen": chosen, "rejected": rejected}
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "id": f"math_step_dpo_{split}_{index:05d}_dpo",
+        "source_id": example.source_id,
+        "step_index": 0,
+        "prompt": prompt,
+        "chosen": chosen,
+        "rejected": rejected,
+        "token_count": count_dpo_tokens(tokenizer, pair),
+        "split": split,
+        "metadata": {**common_metadata(example), "dpo_type": "full_response"},
+    }
 
 
-def iter_split_rows(normalized: Any, split: str) -> Iterable[Mapping[str, Any]]:
-    """Yield valid normalized rows for one split in deterministic order."""
+def build_evaluation_row(example: PreparedExample, index: int, tokenizer: Any, config: Mapping[str, Any]) -> dict[str, Any]:
+    prompt_messages = base_messages(example.model_input, config)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "id": f"math_step_dpo_evaluation_{index:05d}",
+        "source_id": example.source_id,
+        "problem": example.model_input,
+        "reference_answer": example.full_positive,
+        "prompt_messages": prompt_messages,
+        "prompt_token_count": count_chat_tokens(tokenizer, prompt_messages, add_generation_prompt=True),
+        "split": "evaluation",
+        "metadata": {**common_metadata(example), "answer": example.answer},
+    }
 
-    split_rows = normalized.filter(lambda row: row["split"] == split, desc=f"select {split} rows").sort("rank")
-    for row in split_rows:
-        yield row
+
+def build_reserve_row(example: PreparedExample, index: int, tokenizer: Any) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "id": f"math_step_dpo_reserve_{index:05d}",
+        "source_id": example.source_id,
+        "problem": example.model_input,
+        "full_positive": example.full_positive,
+        "full_negative": example.full_negative,
+        "answer": example.answer,
+        "split": "reserve",
+        "metadata": common_metadata(example),
+    }
+
+
+def common_metadata(example: PreparedExample) -> dict[str, Any]:
+    return {
+        "raw_row_index": example.raw_row_index,
+        "normalized_prompt_sha256": example.source_id,
+        "source_dataset": example.source_dataset,
+        "reference_answer_policy": "full_positive",
+    }
+
+
+def dataset_objects(datasets: Any, rows: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "sft": datasets.DatasetDict({split: datasets.Dataset.from_list(rows["sft"][split]) for split in ("train", "validation")}),
+        "dpo": datasets.DatasetDict({split: datasets.Dataset.from_list(rows["dpo"][split]) for split in ("train", "validation")}),
+        "evaluation": datasets.Dataset.from_list(rows["evaluation"]),
+        "reserve": datasets.Dataset.from_list(rows["reserve"]),
+    }
 
 
 def save_final_datasets(final: Mapping[str, Mapping[str, Any]], processed_root: Path) -> None:
-    """Persist final Mini/formal Hugging Face Dataset directories."""
-
-    for mode in ("mini", "formal"):
+    for mode in ("formal", "mini"):
         for kind in ("sft", "dpo", "evaluation"):
             path = processed_root / mode / kind
             path.parent.mkdir(parents=True, exist_ok=True)
             final[mode][kind].save_to_disk(str(path))
+    reserve_path = processed_root / "formal" / "reserve"
+    reserve_path.parent.mkdir(parents=True, exist_ok=True)
+    final["formal"]["reserve"].save_to_disk(str(reserve_path))
 
 
 def build_metadata(
@@ -673,31 +502,74 @@ def build_metadata(
         "raw_dataset_path": str(raw_path),
         "raw_source_rows": raw_source_rows,
         "processed_dataset_paths": {
-            mode: {kind: str(processed_root / mode / kind) for kind in ("sft", "dpo", "evaluation")}
-            for mode in ("mini", "formal")
+            "formal": {
+                "sft": str(processed_root / "formal" / "sft"),
+                "dpo": str(processed_root / "formal" / "dpo"),
+                "evaluation": str(processed_root / "formal" / "evaluation"),
+                "reserve": str(processed_root / "formal" / "reserve"),
+            },
+            "mini": {
+                "sft": str(processed_root / "mini" / "sft"),
+                "dpo": str(processed_root / "mini" / "dpo"),
+                "evaluation": str(processed_root / "mini" / "evaluation"),
+            },
         },
         "config_paths": {"mini": str(configs.mini_path), "formal": str(configs.formal_path)},
         "tokenizers": tokenizers.metadata,
         "target_counts": {"mini": target_counts(mini), "formal": target_counts(formal)},
         "actual_counts": statistics["actual_counts"],
+        "shortfall_counts": statistics["shortfall_counts"],
         "filter_counts_by_reason": statistics["filter_counts_by_reason"],
-        "split_method": "sha256_dataset_revision_source_id_seed_bucket_v1",
-        "selection_method": "formal_first_stable_rank_then_mini_prefix_v1",
+        "split_method": "sha256_math_step_dpo_10k_prompt_seed_revision_v1",
+        "dedupe_method": "normalized_prompt_sha256_group_first_stable_raw_row_v1",
+        "selection_method": "formal_sorted_then_mini_prefix_v1",
+        "reference_answer_policy": "full_positive",
+    }
+
+
+def build_split_manifest(
+    examples: Mapping[str, Sequence[PreparedExample]],
+    configs: ProjectConfigs,
+    prepared_count: int,
+) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "dataset_name": configs.dataset_name,
+        "dataset_revision": configs.dataset_revision,
+        "source_split": configs.source_split,
+        "seed": configs.seed,
+        "prepared_unique_prompt_count": prepared_count,
+        "splits": {
+            split: [
+                {
+                    "rank": index,
+                    "source_id": example.source_id,
+                    "normalized_prompt_sha256": example.source_id,
+                    "raw_row_index": example.raw_row_index,
+                    "split_key": example.split_key,
+                }
+                for index, example in enumerate(examples[split])
+            ]
+            for split in ("train", "validation", "evaluation", "reserve")
+        },
     }
 
 
 def assert_mini_prefix(final: Mapping[str, Mapping[str, Any]]) -> None:
-    """Ensure Mini rows are deterministic prefixes of formal rows by ID."""
-
     for kind in ("sft", "dpo"):
         for split in ("train", "validation"):
-            formal_ids = list(final["formal"][kind][split]["id"])
-            mini_ids = list(final["mini"][kind][split]["id"])
-            if mini_ids != formal_ids[: len(mini_ids)]:
-                raise ValueError(f"Mini {kind}/{split} is not a formal prefix subset")
-    formal_eval_ids = list(final["formal"]["evaluation"]["id"])
-    mini_eval_ids = list(final["mini"]["evaluation"]["id"])
-    if mini_eval_ids != formal_eval_ids[: len(mini_eval_ids)]:
+            formal_ids = list(row["id"] for row in final["formal"][kind][split])
+            mini_ids = list(row["id"] for row in final["mini"][kind][split])
+            expected = formal_ids[: len(mini_ids)]
+            expected_mini = [item.replace("math_step_dpo_", "math_step_dpo_") for item in expected]
+            if mini_ids != expected_mini:
+                formal_sources = [row["source_id"] for row in final["formal"][kind][split]]
+                mini_sources = [row["source_id"] for row in final["mini"][kind][split]]
+                if mini_sources != formal_sources[: len(mini_sources)]:
+                    raise ValueError(f"Mini {kind}/{split} is not a formal prefix subset")
+    formal_eval_sources = [row["source_id"] for row in final["formal"]["evaluation"]]
+    mini_eval_sources = [row["source_id"] for row in final["mini"]["evaluation"]]
+    if mini_eval_sources != formal_eval_sources[: len(mini_eval_sources)]:
         raise ValueError("Mini evaluation is not a formal prefix subset")
 
 
@@ -707,14 +579,32 @@ def dataset_counts(final: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
             "sft": {split: len(final[mode]["sft"][split]) for split in ("train", "validation")},
             "dpo": {split: len(final[mode]["dpo"][split]) for split in ("train", "validation")},
             "evaluation": len(final[mode]["evaluation"]),
+            **({"reserve": len(final[mode]["reserve"])} if "reserve" in final[mode] else {}),
         }
-        for mode in ("mini", "formal")
+        for mode in ("formal", "mini")
     }
 
 
-def load_tokenizers(mini: Mapping[str, Any], formal: Mapping[str, Any]) -> Tokenizers:
-    """Load the exact tokenizer pair configured for Mini/formal length filtering."""
+def shortfall_counts(final: Mapping[str, Mapping[str, Any]], mini: Mapping[str, Any], formal: Mapping[str, Any]) -> dict[str, Any]:
+    counts = dataset_counts(final)
+    targets = {"mini": target_counts(mini), "formal": target_counts(formal)}
+    result: dict[str, Any] = {}
+    for mode in ("formal", "mini"):
+        result[mode] = {
+            "sft": {
+                split: max(0, int(targets[mode]["sft"][split]) - int(counts[mode]["sft"][split]))
+                for split in ("train", "validation")
+            },
+            "dpo": {
+                split: max(0, int(targets[mode]["dpo"][split]) - int(counts[mode]["dpo"][split]))
+                for split in ("train", "validation")
+            },
+            "evaluation": max(0, int(targets[mode]["evaluation"]) - int(counts[mode]["evaluation"])),
+        }
+    return result
 
+
+def load_tokenizers(mini: Mapping[str, Any], formal: Mapping[str, Any]) -> Tokenizers:
     try:
         from transformers import AutoTokenizer
     except ImportError as exc:
@@ -724,10 +614,7 @@ def load_tokenizers(mini: Mapping[str, Any], formal: Mapping[str, Any]) -> Token
     metadata: dict[str, Any] = {}
     for mode, config in (("mini", mini), ("formal", formal)):
         model_dir = ensure_local_tokenizer_model(config)
-        tokenizer = AutoTokenizer.from_pretrained(
-            str(model_dir),
-            trust_remote_code=bool(config["model"].get("trust_remote_code", False)),
-        )
+        tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=bool(config["model"].get("trust_remote_code", False)))
         if not getattr(tokenizer, "chat_template", None):
             raise ValueError(f"{mode}: tokenizer must provide a chat_template")
         if getattr(tokenizer, "pad_token", None) is None:
@@ -749,8 +636,6 @@ def load_tokenizers(mini: Mapping[str, Any], formal: Mapping[str, Any]) -> Token
 
 
 def ensure_local_tokenizer_model(config: Mapping[str, Any]) -> Path:
-    """Ensure the configured local model directory can provide a tokenizer."""
-
     local_dir = Path(str(config["model"]["name_or_path"]))
     if _has_tokenizer_files(local_dir):
         return local_dir
@@ -769,20 +654,22 @@ def ensure_local_tokenizer_model(config: Mapping[str, Any]) -> Path:
     return local_dir
 
 
-def _has_tokenizer_files(path: Path) -> bool:
-    if not path.exists() or not path.is_dir():
-        return False
-    has_config = (path / "config.json").exists() or (path / "tokenizer_config.json").exists()
-    has_tokenizer = any((path / name).exists() for name in ("tokenizer.json", "tokenizer.model", "vocab.json"))
-    return has_config and has_tokenizer
+def base_messages(model_input: str, config: Mapping[str, Any] | None = None) -> list[dict[str, str]]:
+    system_prompt = "You are a careful mathematical reasoning assistant."
+    if config is not None:
+        system_prompt = str(config["preprocessing"]["system_prompt"]).strip()
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": model_input.strip()},
+    ]
+
+
+def assistant_message(content: str) -> dict[str, str]:
+    return {"role": "assistant", "content": content.strip()}
 
 
 def count_chat_tokens(tokenizer: Any, messages: Sequence[Mapping[str, str]], add_generation_prompt: bool) -> int:
-    rendered = tokenizer.apply_chat_template(
-        list(messages),
-        tokenize=True,
-        add_generation_prompt=add_generation_prompt,
-    )
+    rendered = tokenizer.apply_chat_template(list(messages), tokenize=True, add_generation_prompt=add_generation_prompt)
     if hasattr(rendered, "shape"):
         return int(rendered.shape[-1])
     return len(rendered)
@@ -821,146 +708,6 @@ def dpo_length_filter_reason(token_count: Mapping[str, int], config: Mapping[str
     return None
 
 
-def parse_solution(solution: str, minimum_steps: int) -> ParsedSolution:
-    answer = extract_final_answer(solution)
-    candidates = [
-        _split_numbered_or_markdown(solution),
-        _split_paragraphs(solution),
-        _split_sentences_conservatively(solution),
-    ]
-    steps: list[str] = []
-    for candidate in candidates:
-        cleaned = _clean_steps(candidate)
-        if len(cleaned) >= minimum_steps:
-            steps = cleaned
-            break
-    if not steps:
-        return ParsedSolution([], None, answer.method, answer.confidence, answer.answer, "failed", "insufficient_steps")
-    if answer.answer is None or answer.confidence == "low":
-        return ParsedSolution(steps, None, answer.method, answer.confidence, answer.answer, "partial", None)
-    return ParsedSolution(steps, answer.answer, answer.method, answer.confidence, answer.answer, "success", None)
-
-
-def extract_final_answer(solution: str) -> AnswerExtraction:
-    boxed = _extract_last_boxed(solution)
-    if boxed is not None:
-        return AnswerExtraction(boxed, "boxed", "high")
-    hash_answers = re.findall(r"####\s*([^\n]+)", solution)
-    if hash_answers:
-        answer = _strip_answer(hash_answers[-1])
-        if answer:
-            return AnswerExtraction(answer, "hash_answer", "high")
-    label_pattern = re.compile(
-        r"(?is)(?:final\s+answer|correct\s+answer|answer)\s*(?:is|=|:)?\s*(?:\\boxed\{)?\s*([A-Za-z]|\(?[A-E]\)?|[-+]?\d+(?:\.\d+)?|[-+]?\d+\s*/\s*[-+]?\d+|\\frac\{[-+]?\d+\}\{[-+]?\d+\})"
-    )
-    label_answers = label_pattern.findall(solution)
-    if label_answers:
-        answer = _strip_answer(label_answers[-1])
-        if answer:
-            return AnswerExtraction(answer, "answer_label", "high")
-    tail = solution[-500:]
-    choices = re.findall(r"(?<![A-Za-z])\(([A-E])\)|(?:option|choice)\s+([A-E])", tail, flags=re.IGNORECASE)
-    if choices:
-        letter = choices[-1][0] or choices[-1][1]
-        return AnswerExtraction(letter.upper(), "multiple_choice", "medium")
-    line_answer = _extract_final_line_answer(solution)
-    if line_answer is not None:
-        return AnswerExtraction(line_answer, "last_line_answer", "medium")
-    numbers = _NUMBER_RE.findall(tail)
-    if numbers:
-        answer = _strip_answer(numbers[-1])
-        if answer:
-            return AnswerExtraction(answer, "numeric_fallback", "low")
-    return AnswerExtraction(None, ANSWER_METHOD_NONE, "none")
-
-
-def mutate_step(
-    step: str,
-    source_id: str,
-    step_index: int,
-    strategy: str,
-    seed: int,
-    number_offsets: Sequence[int],
-) -> MutationResult:
-    if strategy == NUMBER_MUTATION:
-        return mutate_number(step, source_id, step_index, seed, number_offsets)
-    if strategy == OPERATOR_MUTATION:
-        return mutate_operator(step, source_id, step_index, seed)
-    if strategy == MIXED_MUTATION:
-        first_number = _stable_index(2, seed, source_id, step_index, MIXED_MUTATION, "order") == 0
-        strategies = [NUMBER_MUTATION, OPERATOR_MUTATION] if first_number else [OPERATOR_MUTATION, NUMBER_MUTATION]
-        failures: list[str] = []
-        for candidate in strategies:
-            result = mutate_step(step, source_id, step_index, candidate, seed, number_offsets)
-            if result.success:
-                return result
-            failures.append(f"{candidate}:{result.reason}")
-        return MutationResult(MIXED_MUTATION, step, None, None, False, ";".join(failures))
-    raise ValueError(f"Unsupported mutation strategy: {strategy}")
-
-
-def mutate_number(step: str, source_id: str, step_index: int, seed: int, number_offsets: Sequence[int]) -> MutationResult:
-    offsets = [int(offset) for offset in number_offsets if int(offset) != 0]
-    if not offsets:
-        raise ValueError("number_offset_choices must contain at least one non-zero offset")
-    candidates = [match for match in _NUMBER_RE.finditer(step) if match.start() >= _content_start(step)]
-    if not candidates:
-        return MutationResult(NUMBER_MUTATION, step, None, None, False, "no_number_target")
-    match = candidates[_stable_index(len(candidates), seed, source_id, step_index, NUMBER_MUTATION, "target")]
-    offset = offsets[_stable_index(len(offsets), seed, source_id, step_index, NUMBER_MUTATION, "offset")]
-    replacement = _offset_number(match.group(0), offset)
-    mutated = f"{step[:match.start()]}{replacement}{step[match.end():]}"
-    if mutated.strip() == step.strip():
-        return MutationResult(NUMBER_MUTATION, step, None, None, False, "unchanged_output")
-    return MutationResult(NUMBER_MUTATION, mutated, (match.start(), match.end()), replacement, True, "applied")
-
-
-def mutate_operator(step: str, source_id: str, step_index: int, seed: int) -> MutationResult:
-    candidates = [match for match in _OPERATOR_RE.finditer(step) if _is_binary_operator_target(step, match)]
-    if not candidates:
-        return MutationResult(OPERATOR_MUTATION, step, None, None, False, "no_operator_target")
-    match = candidates[_stable_index(len(candidates), seed, source_id, step_index, OPERATOR_MUTATION, "target")]
-    replacement = _operator_replacement(match.group(0))
-    mutated = f"{step[:match.start()]}{replacement}{step[match.end():]}"
-    if mutated.strip() == step.strip():
-        return MutationResult(OPERATOR_MUTATION, step, None, None, False, "unchanged_output")
-    return MutationResult(OPERATOR_MUTATION, mutated, (match.start(), match.end()), replacement, True, "applied")
-
-
-def mutation_metadata(result: MutationResult, configured_strategy: str) -> dict[str, Any]:
-    return {
-        "configured_strategy": configured_strategy,
-        "strategy": result.strategy,
-        "changed_span": list(result.changed_span) if result.changed_span is not None else None,
-        "replacement": result.replacement,
-        "success": result.success,
-        "reason": result.reason,
-    }
-
-
-def base_messages(problem: str, config: Mapping[str, Any]) -> list[dict[str, str]]:
-    return [
-        {"role": "system", "content": str(config["preprocessing"]["system_prompt"]).strip()},
-        {
-            "role": "user",
-            "content": f"{str(config['preprocessing']['user_instruction']).strip()}\n\nProblem:\n{problem.strip()}",
-        },
-    ]
-
-
-def assistant_message(content: str) -> dict[str, str]:
-    return {"role": "assistant", "content": content.strip()}
-
-
-def split_ratios(config: Mapping[str, Any]) -> dict[str, float]:
-    data = config["data"]
-    return {
-        "train": float(data["train_ratio"]),
-        "validation": float(data["validation_ratio"]),
-        "evaluation": float(data["evaluation_ratio"]),
-    }
-
-
 def target_counts(config: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "sft": {"train": int(config["data"]["train_samples"]), "validation": int(config["data"]["validation_samples"])},
@@ -969,30 +716,48 @@ def target_counts(config: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def assign_split(
-    source_id: str,
-    dataset_name: str,
-    dataset_revision: str,
-    source_split: str,
-    seed: int,
-    ratios: Mapping[str, float],
-) -> str:
-    bucket = _bucket("split", dataset_name, dataset_revision, source_split, source_id, str(seed))
-    train_cutoff = float(ratios["train"])
-    validation_cutoff = train_cutoff + float(ratios["validation"])
-    if bucket < train_cutoff:
-        return "train"
-    if bucket < validation_cutoff:
-        return "validation"
-    return "evaluation"
+def _config_with_smoke_counts(config: Mapping[str, Any]) -> dict[str, Any]:
+    copied = {key: dict(value) if isinstance(value, dict) else value for key, value in config.items()}
+    train = int(config["smoke_test"]["train_samples"])
+    validation = int(config["smoke_test"]["validation_samples"])
+    copied["data"]["train_samples"] = train
+    copied["data"]["validation_samples"] = validation
+    copied["dpo"]["train_samples"] = train
+    copied["dpo"]["validation_samples"] = validation
+    copied["evaluation"]["samples"] = int(config["smoke_test"]["evaluation_samples"])
+    return copied
 
 
-def stable_rank(configs: ProjectConfigs, source_id: str, split: str) -> str:
+def stable_row_key(configs: ProjectConfigs, normalized_prompt: str, raw_index: int) -> str:
     return hashlib.sha256(
-        "|".join(["rank", configs.dataset_name, configs.dataset_revision, configs.source_split, split, source_id, str(configs.seed)]).encode(
-            "utf-8"
-        )
+        "|".join(["math_step_dpo_row_v1", str(configs.seed), configs.dataset_revision, normalized_prompt, str(raw_index)]).encode("utf-8")
     ).hexdigest()
+
+
+def stable_split_key(configs: ProjectConfigs, normalized_prompt: str) -> str:
+    return hashlib.sha256(
+        "|".join(["math_step_dpo_10k_v1", str(configs.seed), configs.dataset_revision, normalized_prompt]).encode("utf-8")
+    ).hexdigest()
+
+
+def hash_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def join_reasoning(initial_reason_steps: str, tail: str) -> str:
+    return f"{initial_reason_steps.strip()}\n\n{tail.strip()}"
+
+
+def normalize_prompt_for_dedupe(prompt: str) -> str:
+    return re.sub(r"\s+", " ", prompt.strip())
+
+
+def normalize_for_comparison(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip()).lower()
+
+
+def starts_with_normalized(text: str, prefix: str) -> bool:
+    return normalize_for_comparison(text).startswith(normalize_for_comparison(prefix))
 
 
 def normalize_text(text: str, preprocessing: Mapping[str, Any]) -> str:
@@ -1008,12 +773,39 @@ def normalize_text(text: str, preprocessing: Mapping[str, Any]) -> str:
     return normalized
 
 
-def build_source_id(batch: Mapping[str, list[Any]], offset: int, row_index: int, id_field: str | None) -> str:
-    if id_field is None:
-        return f"{row_index:08d}"
-    raw_value = str(batch[id_field][offset]).strip()
-    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_value).strip("_")
-    return cleaned[:96] if cleaned else f"{row_index:08d}"
+def _dataset_rows(raw: Any) -> list[Mapping[str, Any]]:
+    return [raw[index] for index in range(len(raw))]
+
+
+def _flatten_ids(ids: Any) -> list[int]:
+    if hasattr(ids, "tolist"):
+        ids = ids.tolist()
+    if ids and isinstance(ids[0], list):
+        flattened: list[int] = []
+        for item in ids:
+            flattened.extend(int(value) for value in item)
+        return flattened
+    return [int(value) for value in ids]
+
+
+def _raw_dataset_path(config: Mapping[str, Any]) -> Path:
+    return Path(str(config["data"]["raw_dir"]))
+
+
+def _prepare_output_root(path: Path, overwrite: bool) -> None:
+    if path.exists() and any(path.iterdir()):
+        if not overwrite:
+            raise FileExistsError(f"Refusing to overwrite non-empty processed directory: {path}")
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _has_tokenizer_files(path: Path) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    has_config = (path / "config.json").exists() or (path / "tokenizer_config.json").exists()
+    has_tokenizer = any((path / name).exists() for name in ("tokenizer.json", "tokenizer.model", "vocab.json"))
+    return has_config and has_tokenizer
 
 
 def _validate_config_pair(mini: Mapping[str, Any], formal: Mapping[str, Any], mini_path: Path, formal_path: Path) -> None:
@@ -1021,18 +813,19 @@ def _validate_config_pair(mini: Mapping[str, Any], formal: Mapping[str, Any], mi
         raise ValueError(f"{mini_path}: project.run_mode must be 'mini'")
     if formal.get("project", {}).get("run_mode") != "formal":
         raise ValueError(f"{formal_path}: project.run_mode must be 'formal'")
-    shared = ("dataset_name", "dataset_revision", "source_split", "processed_dir", "raw_dir")
+    shared = ("dataset_name", "dataset_revision", "source_split", "processed_dir", "raw_dir", "mini_dir", "formal_dir")
     for key in shared:
         if mini["data"].get(key) != formal["data"].get(key):
             raise ValueError(f"Mini and formal configs must share data.{key}")
     if mini["project"]["seed"] != formal["project"]["seed"]:
         raise ValueError("Mini and formal configs must share project.seed")
     for path, config in ((mini_path, mini), (formal_path, formal)):
-        ratios = split_ratios(config)
-        if abs(sum(ratios.values()) - 1.0) > 1e-9:
-            raise ValueError(f"{path}: split ratios must sum to 1.0")
         if int(config["dpo"]["max_prompt_length"]) >= int(config["dpo"]["max_length"]):
             raise ValueError(f"{path}: dpo.max_prompt_length must be less than dpo.max_length")
+        if int(config["data"]["train_samples"]) != int(config["dpo"]["train_samples"]):
+            raise ValueError(f"{path}: data.train_samples and dpo.train_samples must match for shared SFT/DPO splits")
+        if int(config["data"]["validation_samples"]) != int(config["dpo"]["validation_samples"]):
+            raise ValueError(f"{path}: data.validation_samples and dpo.validation_samples must match for shared SFT/DPO splits")
     if int(mini["data"]["train_samples"]) > int(formal["data"]["train_samples"]):
         raise ValueError("Mini SFT train count cannot exceed formal")
     if int(mini["dpo"]["train_samples"]) > int(formal["dpo"]["train_samples"]):
@@ -1041,244 +834,20 @@ def _validate_config_pair(mini: Mapping[str, Any], formal: Mapping[str, Any], mi
         raise ValueError("Mini evaluation count cannot exceed formal")
 
 
-def _config_with_smoke_counts(config: Mapping[str, Any]) -> dict[str, Any]:
-    copied = {key: dict(value) if isinstance(value, dict) else value for key, value in config.items()}
-    copied["data"]["train_samples"] = int(config["smoke_test"]["train_samples"])
-    copied["data"]["validation_samples"] = int(config["smoke_test"]["validation_samples"])
-    copied["evaluation"]["samples"] = int(config["smoke_test"]["evaluation_samples"])
-    copied["dpo"]["train_samples"] = int(config["smoke_test"]["dpo_samples"])
-    copied["dpo"]["validation_samples"] = int(config["smoke_test"]["validation_samples"])
-    return copied
-
-
-def _smoke_source_rows(config: Mapping[str, Any]) -> int:
-    counts = target_counts(config)
-    total = counts["sft"]["train"] + counts["sft"]["validation"] + counts["dpo"]["train"] + counts["dpo"]["validation"] + counts["evaluation"]
-    return max(2000, int(total) * 50)
-
-
-def _raw_dataset_path(config: Mapping[str, Any]) -> Path:
-    path = Path(str(config["data"]["raw_dir"]))
-    return path if path.name == "numina_math" else path / "numina_math"
-
-
-def _prepare_processed_root(processed_root: Path, overwrite: bool) -> None:
-    if processed_root.exists() and any(processed_root.iterdir()):
-        if not overwrite:
-            raise FileExistsError(f"Refusing to overwrite non-empty processed directory: {processed_root}")
-        shutil.rmtree(processed_root)
-    processed_root.mkdir(parents=True, exist_ok=True)
-
-
-def _normalization_filter_reason(problem: Any, solution: Any, normalized_problem: str, normalized_solution: str) -> str | None:
-    if not isinstance(problem, str):
-        return "problem_not_string"
-    if not isinstance(solution, str):
-        return "solution_not_string"
-    if not normalized_problem:
-        return "empty_problem"
-    if not normalized_solution:
-        return "empty_solution"
-    if normalized_problem == normalized_solution:
-        return "problem_equals_solution"
-    return None
-
-
-def _first_present(fields: Sequence[str], candidates: Sequence[str], semantic_name: str) -> str:
-    for candidate in candidates:
-        if candidate in fields:
-            return candidate
-    raise ValueError(f"Could not find a {semantic_name} field in raw dataset fields: {list(fields)}")
-
-
-def _batch_value(batch: Mapping[str, list[Any]], key: str, offset: int) -> Any:
-    if key not in batch:
-        return None
-    value = batch[key][offset]
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
-
-
-def _extract_final_line_answer(text: str) -> str | None:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    for line in reversed(lines[-3:]):
-        cleaned = _strip_answer(line)
-        if re.fullmatch(r"\(?[A-E]\)?|\\frac\{[-+]?\d+\}\{[-+]?\d+\}|[-+]?\d+\s*/\s*[-+]?\d+|[-+]?\d+(?:\.\d+)?", cleaned):
-            return _strip_answer(cleaned)
-    return None
-
-
-def _extract_last_boxed(text: str) -> str | None:
-    commands = ("\\boxed{", "\\fbox{")
-    results: list[tuple[int, str]] = []
-    for command in commands:
-        start = 0
-        while True:
-            index = text.find(command, start)
-            if index == -1:
-                break
-            content = _balanced_brace_content(text, index + len(command) - 1)
-            if content is not None:
-                results.append((index, content))
-            start = index + len(command)
-    if not results:
-        return None
-    answer = _strip_answer(max(results, key=lambda item: item[0])[1])
-    return answer or None
-
-
-def _balanced_brace_content(text: str, open_brace_index: int) -> str | None:
-    depth = 0
-    content_start = open_brace_index + 1
-    for index in range(open_brace_index, len(text)):
-        char = text[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return text[content_start:index]
-    return None
-
-
-def _split_numbered_or_markdown(solution: str) -> list[str]:
-    pattern = re.compile(r"(?m)(?=^\s*(?:\d+[\).]|[-*]\s+\*\*|Step\s+\d+[:.)]))")
-    parts = [part.strip() for part in pattern.split(solution) if part.strip()]
-    return parts if len(parts) >= 2 else []
-
-
-def _split_paragraphs(solution: str) -> list[str]:
-    return [part.strip() for part in re.split(r"\n\s*\n+", solution) if part.strip()]
-
-
-def _split_sentences_conservatively(solution: str) -> list[str]:
-    normalized = re.sub(r"\s+", " ", solution.strip())
-    if not normalized:
-        return []
-    parts = re.split(r"(?<=[.!?。])\s+(?=[A-Z$\\(]|Therefore|Thus|So|Hence)", normalized)
-    return [part.strip() for part in parts if part.strip()]
-
-
-def _clean_steps(candidates: Sequence[str]) -> list[str]:
-    steps: list[str] = []
-    for candidate in candidates:
-        cleaned = candidate.strip()
-        if not cleaned:
-            continue
-        if len(cleaned) < 3 and steps:
-            steps[-1] = f"{steps[-1]} {cleaned}".strip()
-            continue
-        if steps and cleaned == steps[-1]:
-            continue
-        steps.append(cleaned)
-    return steps
-
-
-def _strip_answer(answer: str) -> str:
-    stripped = answer.strip().rstrip(".。,:;")
-    if stripped.startswith("(") and stripped.endswith(")") and len(stripped) == 3:
-        return stripped[1].upper()
-    if len(stripped) == 1 and stripped.isalpha():
-        return stripped.upper()
-    return stripped
-
-
-def _offset_number(text: str, offset: int) -> str:
-    if text.startswith("\\frac"):
-        match = re.fullmatch(r"\\frac\{([-+]?\d+)\}\{([-+]?\d+)\}", text)
-        if match is None:
-            return text
-        return f"\\frac{{{int(match.group(1)) + offset}}}{{{match.group(2)}}}"
-    if "/" in text:
-        numerator, denominator = text.split("/", 1)
-        return f"{int(numerator.strip()) + offset}/{denominator.strip()}"
-    try:
-        value = Decimal(text)
-    except InvalidOperation:
-        return text
-    mutated = value + Decimal(offset)
-    if "." in text:
-        decimal_places = len(text.rsplit(".", 1)[1])
-        return f"{mutated:.{decimal_places}f}"
-    return str(int(mutated))
-
-
-def _operator_replacement(operator: str) -> str:
-    replacements = {
-        "+": "-",
-        "-": "+",
-        "*": "+",
-        "/": "*",
-        "\\times": "+",
-        "\\cdot": "+",
-        "\\div": "\\times",
-        "=": "\\ne",
-        "<": ">",
-        ">": "<",
-        "\\le": "\\ge",
-        "\\ge": "\\le",
-    }
-    return replacements[operator]
-
-
-def _is_binary_operator_target(step: str, match: re.Match[str]) -> bool:
-    if match.start() < _content_start(step):
-        return False
-    operator = match.group(0)
-    if operator == "-":
-        if match.end() < len(step) and step[match.end()].isdigit():
-            return False
-        before = step[: match.start()].rstrip()
-        if not before or before[-1] in "([={+-*/<>":
-            return False
-    if operator in {"+", "*", "/", "=", "<", ">"}:
-        before = step[: match.start()].rstrip()
-        after = step[match.end() :].lstrip()
-        if not before or not after:
-            return False
-    return True
-
-
-def _content_start(step: str) -> int:
-    match = re.match(r"\s*(?:step\s+\d+[:.)]|\d+[\).])\s*", step, flags=re.IGNORECASE)
-    return match.end() if match else 0
-
-
-def _stable_index(size: int, seed: int, source_id: str, step_index: int, *parts: str) -> int:
-    payload = "|".join([str(seed), source_id, str(step_index), *parts])
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    return int(digest[:16], 16) % size
-
-
-def _bucket(*parts: str) -> float:
-    digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
-    return int(digest[:16], 16) / float(16**16)
-
-
-def _flatten_ids(ids: Any) -> list[int]:
-    if hasattr(ids, "tolist"):
-        ids = ids.tolist()
-    if ids and isinstance(ids[0], list):
-        return [int(value) for value in ids[0]]
-    return [int(value) for value in ids]
-
-
 def _load_yaml(path: Path) -> dict[str, Any]:
     try:
         import yaml
     except ImportError as exc:
-        raise RuntimeError("Stage 1 preprocessing requires PyYAML to read YAML configs") from exc
-    if not path.exists():
-        raise FileNotFoundError(f"Config file does not exist: {path}")
+        raise RuntimeError("PyYAML is required to load Stage 1 config files") from exc
     with path.open("r", encoding="utf-8") as handle:
         loaded = yaml.safe_load(handle)
     if not isinstance(loaded, dict):
-        raise ValueError(f"Config must be a YAML mapping: {path}")
+        raise ValueError(f"Config must be a mapping: {path}")
     return loaded
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True)
         handle.write("\n")
@@ -1288,7 +857,7 @@ def _import_datasets() -> Any:
     try:
         import datasets
     except ImportError as exc:
-        raise RuntimeError("Stage 1 preprocessing requires the 'datasets' package") from exc
+        raise RuntimeError("Stage 1 requires the 'datasets' package") from exc
     return datasets
 
 

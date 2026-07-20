@@ -6,7 +6,7 @@ project:
   seed: 42
   description: >-
     Formal RTX 4090 24GB mathematical reasoning post-training with
-    Qwen2.5-3B, full BF16 LoRA SFT and step-level DPO.
+    Qwen2.5-3B, full BF16 LoRA SFT and full-response DPO on Math-Step-DPO-10K.
 
 model:
   name_or_path: model/Qwen2.5-3B-Instruct
@@ -16,7 +16,7 @@ model:
   revision: aa8e72537993ba99e69dfaafa59ed015b17504d1
   trust_remote_code: false
   torch_dtype: bfloat16
-  max_length: 1024
+  max_length: 2048
   use_cache: false
   gradient_checkpointing: true
 
@@ -44,18 +44,18 @@ lora:
     - down_proj
 
 data:
-  dataset_name: AI-MO/NuminaMath-CoT
-  dataset_revision: 9d8d210c9f6a36c8f3cd84045668c9b7800ef517
+  dataset_name: xinlai/Math-Step-DPO-10K
+  dataset_revision: 84a203c
   source_split: train
-  train_samples: 5000
-  validation_samples: 200
-  train_ratio: 0.95
-  validation_ratio: 0.025
-  evaluation_ratio: 0.025
-  raw_dir: data/raw/numina_math
-  processed_dir: data/processed
-  mini_dir: data/processed/mini
-  formal_dir: data/processed/formal
+  train_samples: 8000
+  validation_samples: 1000
+  train_ratio: 0.8
+  validation_ratio: 0.1
+  evaluation_ratio: 0.1
+  raw_dir: data/raw/Math-Step-DPO-10K
+  processed_dir: data/Math-10K
+  mini_dir: data/Math-10K/mini
+  formal_dir: data/Math-10K/formal
 
 preprocessing:
   normalize_line_endings: true
@@ -115,17 +115,17 @@ sft:
 
 dpo:
   enabled: true
-  dataset_dir: data/processed/formal/dpo_v2
+  dataset_dir: data/Math-10K/formal/dpo
   output_dir: outputs/formal_full_bf16/dpo
-  train_samples: 5000
-  validation_samples: 200
+  train_samples: 8000
+  validation_samples: 1000
   beta: 0.1
   loss_type: sigmoid
   learning_rate: 0.000005
   num_train_epochs: 1
   max_steps: 200
-  max_length: 1024
-  max_prompt_length: 768
+  max_length: 2048
+  max_prompt_length: 1024
   per_device_train_batch_size: 1
   per_device_eval_batch_size: 1
   gradient_accumulation_steps: 16
@@ -146,12 +146,12 @@ dpo:
 evaluation:
   output_dir: outputs/results/formal_full_bf16
   batch_size: 8
-  max_new_tokens: 512
+  max_new_tokens: 1024
   do_sample: false
   temperature: 0.0
   top_p: 1.0
   num_beams: 1
-  samples: 200
+  samples: 1000
   metrics:
     - answer_extraction_rate
     - exact_match_accuracy
@@ -190,6 +190,6 @@ smoke_test:
   enabled_by_default: false
   train_samples: 64
   validation_samples: 16
-  dpo_samples: 32
+  dpo_samples: 64
   max_steps: 10
   evaluation_samples: 16
