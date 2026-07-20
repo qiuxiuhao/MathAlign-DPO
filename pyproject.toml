@@ -10,7 +10,7 @@ requires-python = ">=3.11,<3.12"
 
 [tool.setuptools.packages.find]
 where = ["src", "."]
-include = ["mathalign_dpo*", "scripts*"]
+include = ["mathalign_dpo*", "scripts*", "sft*", "configs*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
