@@ -1,0 +1,111 @@
+{
+  "citation": "",
+  "description": "",
+  "features": {
+    "schema_version": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "id": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "source_id": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "step_index": {
+      "dtype": "int64",
+      "_type": "Value"
+    },
+    "prompt": {
+      "feature": {
+        "role": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "content": {
+          "dtype": "string",
+          "_type": "Value"
+        }
+      },
+      "_type": "List"
+    },
+    "chosen": {
+      "feature": {
+        "role": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "content": {
+          "dtype": "string",
+          "_type": "Value"
+        }
+      },
+      "_type": "List"
+    },
+    "rejected": {
+      "feature": {
+        "role": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "content": {
+          "dtype": "string",
+          "_type": "Value"
+        }
+      },
+      "_type": "List"
+    },
+    "token_count": {
+      "prompt": {
+        "dtype": "int64",
+        "_type": "Value"
+      },
+      "chosen_total": {
+        "dtype": "int64",
+        "_type": "Value"
+      },
+      "rejected_total": {
+        "dtype": "int64",
+        "_type": "Value"
+      },
+      "chosen_completion": {
+        "dtype": "int64",
+        "_type": "Value"
+      },
+      "rejected_completion": {
+        "dtype": "int64",
+        "_type": "Value"
+      }
+    },
+    "split": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "metadata": {
+      "raw_row_index": {
+        "dtype": "int64",
+        "_type": "Value"
+      },
+      "normalized_prompt_sha256": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "source_dataset": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "reference_answer_policy": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "dpo_type": {
+        "dtype": "string",
+        "_type": "Value"
+      }
+    }
+  },
+  "homepage": "",
+  "license": ""
+}

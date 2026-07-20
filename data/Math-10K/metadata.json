@@ -1,0 +1,138 @@
+{
+  "actual_counts": {
+    "formal": {
+      "dpo": {
+        "train": 6887,
+        "validation": 1000
+      },
+      "evaluation": 1000,
+      "reserve": 0,
+      "sft": {
+        "train": 6887,
+        "validation": 1000
+      }
+    },
+    "mini": {
+      "dpo": {
+        "train": 256,
+        "validation": 32
+      },
+      "evaluation": 50,
+      "reserve": 0,
+      "sft": {
+        "train": 256,
+        "validation": 32
+      }
+    }
+  },
+  "completed": true,
+  "config_paths": {
+    "formal": "configs/qwen25_3b_4090.yaml",
+    "mini": "configs/qwen25_0_5b_m5_24gb_mini.yaml"
+  },
+  "created_at": "2026-07-20T18:39:43Z",
+  "dataset_name": "xinlai/Math-Step-DPO-10K",
+  "dataset_revision": "84a203c",
+  "dedupe_method": "normalized_prompt_sha256_group_first_stable_raw_row_v1",
+  "filter_counts_by_reason": {
+    "dedupe": {
+      "duplicate_prompt_rows": 1908
+    },
+    "field_filter": {},
+    "formal_length": {},
+    "mini_length": {}
+  },
+  "processed_dataset_paths": {
+    "formal": {
+      "dpo": "data/Math-10K/formal/dpo",
+      "evaluation": "data/Math-10K/formal/evaluation",
+      "reserve": "data/Math-10K/formal/reserve",
+      "sft": "data/Math-10K/formal/sft"
+    },
+    "mini": {
+      "dpo": "data/Math-10K/mini/dpo",
+      "evaluation": "data/Math-10K/mini/evaluation",
+      "sft": "data/Math-10K/mini/sft"
+    }
+  },
+  "raw_dataset_path": "data/raw/Math-Step-DPO-10K",
+  "raw_source_rows": 10795,
+  "reference_answer_policy": "full_positive",
+  "schema_version": "2.0",
+  "seed": 42,
+  "selection_method": "formal_sorted_then_mini_prefix_v1",
+  "shortfall_counts": {
+    "formal": {
+      "dpo": {
+        "train": 1113,
+        "validation": 0
+      },
+      "evaluation": 0,
+      "sft": {
+        "train": 1113,
+        "validation": 0
+      }
+    },
+    "mini": {
+      "dpo": {
+        "train": 0,
+        "validation": 0
+      },
+      "evaluation": 0,
+      "sft": {
+        "train": 0,
+        "validation": 0
+      }
+    }
+  },
+  "smoke_test": false,
+  "source_split": "train",
+  "split_method": "sha256_math_step_dpo_10k_prompt_seed_revision_v1",
+  "stage": 1,
+  "target_counts": {
+    "formal": {
+      "dpo": {
+        "train": 8000,
+        "validation": 1000
+      },
+      "evaluation": 1000,
+      "sft": {
+        "train": 8000,
+        "validation": 1000
+      }
+    },
+    "mini": {
+      "dpo": {
+        "train": 256,
+        "validation": 32
+      },
+      "evaluation": 50,
+      "sft": {
+        "train": 256,
+        "validation": 32
+      }
+    }
+  },
+  "tokenizers": {
+    "formal": {
+      "chat_template_sha256": "cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f",
+      "eos_token_id": 151645,
+      "max_length": 2048,
+      "modelscope_name_or_path": "Qwen/Qwen2.5-3B-Instruct",
+      "modelscope_revision": "master",
+      "name_or_path": "model/Qwen2.5-3B-Instruct",
+      "pad_token_id": 151643,
+      "revision": "aa8e72537993ba99e69dfaafa59ed015b17504d1"
+    },
+    "mini": {
+      "chat_template_sha256": "cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f",
+      "eos_token_id": 151645,
+      "max_length": 2048,
+      "modelscope_name_or_path": "Qwen/Qwen2.5-0.5B-Instruct",
+      "modelscope_revision": "master",
+      "name_or_path": "model/Qwen2.5-0.5B-Instruct",
+      "pad_token_id": 151643,
+      "revision": "7ae557604adf67be50417f59c2c2f167def9a775"
+    }
+  }
+}

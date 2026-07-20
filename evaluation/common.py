@@ -81,14 +81,16 @@ def generate_predictions(
                 hit_max_new_tokens = finish_reason == "length" and len(new_token_ids) >= max_new_tokens
                 generated_text = tokenizer.decode(new_token_ids, skip_special_tokens=True)
                 predicted, extraction_method = extract_answer(generated_text, finish_reason=finish_reason)
-                reference = normalize_answer(str(row["reference_answer"]))
+                reference_answer = str(row["reference_answer"])
+                reference_final_answer, reference_source, reference_extraction_method = gold_reference_answer(row)
+                reference = normalize_answer(reference_final_answer)
                 normalized_predicted = normalize_answer(predicted)
                 strict_exact_match = (
                     normalized_predicted is not None and reference is not None and normalized_predicted == reference
                 )
                 math_equivalent, match_method = compare_answers(
                     predicted,
-                    str(row["reference_answer"]),
+                    reference_final_answer,
                     prompt_messages=prompt_messages,
                     strict_exact_match=strict_exact_match,
                 )
@@ -102,9 +104,13 @@ def generate_predictions(
                         "generated_text": generated_text,
                         "predicted_answer": predicted,
                         "normalized_predicted_answer": normalized_predicted,
-                        "reference_answer": str(row["reference_answer"]),
+                        "reference_answer": reference_answer,
+                        "reference_final_answer": reference_final_answer,
+                        "reference_answer_source": reference_source,
                         "normalized_reference_answer": reference,
+                        "reference_extraction_method": reference_extraction_method,
                         "answer_extracted": normalized_predicted is not None,
+                        "reference_answer_extracted": reference_final_answer is not None,
                         "extraction_method": extraction_method,
                         "strict_exact_match": strict_exact_match,
                         "math_equivalent": math_equivalent,
@@ -142,6 +148,7 @@ def summarize_predictions(predictions: Sequence[Mapping[str, Any]], model_stages
         if not rows:
             raise ValueError(f"No predictions for {stage}")
         extracted = sum(1 for row in rows if bool(row["answer_extracted"]))
+        reference_extracted = sum(1 for row in rows if bool(row.get("reference_answer_extracted", True)))
         strict_exact = sum(1 for row in rows if bool(row["strict_exact_match"]))
         math_matches = sum(1 for row in rows if bool(row["math_equivalent"]))
         eos_finishes = sum(1 for row in rows if row["finish_reason"] == "eos")
@@ -152,6 +159,7 @@ def summarize_predictions(predictions: Sequence[Mapping[str, Any]], model_stages
         summary[stage] = {
             "num_examples": len(rows),
             "answer_extraction_rate": extracted / len(rows),
+            "reference_answer_extraction_rate": reference_extracted / len(rows),
             "strict_exact_match": strict_exact / len(rows),
             "math_equivalent": math_matches / len(rows),
             "exact_match": strict_exact / len(rows),
@@ -204,6 +212,30 @@ def extract_answer(text: str, finish_reason: str = "eos") -> tuple[str | None, s
     if numbers:
         return _strip_answer(numbers[-1]), "tail_number"
     return None, "not_found"
+
+
+def extract_reference_answer(text: str) -> tuple[str | None, str]:
+    """Extract the final answer from a gold full solution trajectory."""
+
+    answer, method = extract_answer(text, finish_reason="eos")
+    if answer is not None:
+        return answer, method
+    return None, method
+
+
+def gold_reference_answer(row: Mapping[str, Any]) -> tuple[str, str, str]:
+    """Return the gold final answer, preferring Stage 1 metadata.answer."""
+
+    metadata = row.get("metadata")
+    if isinstance(metadata, Mapping):
+        answer = metadata.get("answer")
+        if isinstance(answer, str) and answer.strip():
+            return answer.strip(), "metadata.answer", "metadata_answer"
+    reference_answer = str(row["reference_answer"])
+    extracted, method = extract_reference_answer(reference_answer)
+    if extracted is not None:
+        return extracted, "reference_answer", method
+    return reference_answer, "reference_answer", "full_reference_fallback"
 
 
 def normalize_answer(answer: str | None) -> str | None:

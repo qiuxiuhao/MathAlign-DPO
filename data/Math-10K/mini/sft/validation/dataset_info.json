@@ -1,0 +1,85 @@
+{
+  "citation": "",
+  "description": "",
+  "features": {
+    "schema_version": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "id": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "source_id": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "prompt": {
+      "feature": {
+        "role": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "content": {
+          "dtype": "string",
+          "_type": "Value"
+        }
+      },
+      "_type": "List"
+    },
+    "completion": {
+      "feature": {
+        "role": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "content": {
+          "dtype": "string",
+          "_type": "Value"
+        }
+      },
+      "_type": "List"
+    },
+    "messages": {
+      "feature": {
+        "role": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "content": {
+          "dtype": "string",
+          "_type": "Value"
+        }
+      },
+      "_type": "List"
+    },
+    "token_count": {
+      "dtype": "int64",
+      "_type": "Value"
+    },
+    "split": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "metadata": {
+      "raw_row_index": {
+        "dtype": "int64",
+        "_type": "Value"
+      },
+      "normalized_prompt_sha256": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "source_dataset": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "reference_answer_policy": {
+        "dtype": "string",
+        "_type": "Value"
+      }
+    }
+  },
+  "homepage": "",
+  "license": ""
+}
