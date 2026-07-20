@@ -723,9 +723,9 @@ def load_tokenizers(mini: Mapping[str, Any], formal: Mapping[str, Any]) -> Token
     loaded: dict[str, Any] = {}
     metadata: dict[str, Any] = {}
     for mode, config in (("mini", mini), ("formal", formal)):
+        model_dir = ensure_local_tokenizer_model(config)
         tokenizer = AutoTokenizer.from_pretrained(
-            str(config["model"]["name_or_path"]),
-            revision=str(config["model"]["revision"]),
+            str(model_dir),
             trust_remote_code=bool(config["model"].get("trust_remote_code", False)),
         )
         if not getattr(tokenizer, "chat_template", None):
@@ -736,7 +736,9 @@ def load_tokenizers(mini: Mapping[str, Any], formal: Mapping[str, Any]) -> Token
             tokenizer.pad_token = tokenizer.eos_token
         loaded[mode] = tokenizer
         metadata[mode] = {
-            "name_or_path": str(config["model"]["name_or_path"]),
+            "name_or_path": str(model_dir),
+            "modelscope_name_or_path": str(config["model"].get("modelscope_name_or_path") or ""),
+            "modelscope_revision": str(config["model"].get("modelscope_revision") or ""),
             "revision": str(config["model"]["revision"]),
             "max_length": int(config["model"]["max_length"]),
             "chat_template_sha256": hashlib.sha256(str(tokenizer.chat_template).encode("utf-8")).hexdigest(),
@@ -744,6 +746,35 @@ def load_tokenizers(mini: Mapping[str, Any], formal: Mapping[str, Any]) -> Token
             "eos_token_id": tokenizer.eos_token_id,
         }
     return Tokenizers(mini=loaded["mini"], formal=loaded["formal"], metadata=metadata)
+
+
+def ensure_local_tokenizer_model(config: Mapping[str, Any]) -> Path:
+    """Ensure the configured local model directory can provide a tokenizer."""
+
+    local_dir = Path(str(config["model"]["name_or_path"]))
+    if _has_tokenizer_files(local_dir):
+        return local_dir
+    remote = str(config["model"].get("modelscope_name_or_path") or config["model"].get("remote_name_or_path") or "")
+    if not remote:
+        raise ValueError(f"model.modelscope_name_or_path is required when tokenizer files are missing: {local_dir}")
+    revision = str(config["model"].get("modelscope_revision") or "master")
+    try:
+        from modelscope import snapshot_download
+    except ImportError as exc:
+        raise RuntimeError("Stage 1 tokenizer setup requires the 'modelscope' package when local tokenizer files are missing") from exc
+    local_dir.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_download(model_id=remote, revision=revision, local_dir=str(local_dir))
+    if not _has_tokenizer_files(local_dir):
+        raise FileNotFoundError(f"ModelScope download did not create tokenizer files in {local_dir}")
+    return local_dir
+
+
+def _has_tokenizer_files(path: Path) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    has_config = (path / "config.json").exists() or (path / "tokenizer_config.json").exists()
+    has_tokenizer = any((path / name).exists() for name in ("tokenizer.json", "tokenizer.model", "vocab.json"))
+    return has_config and has_tokenizer
 
 
 def count_chat_tokens(tokenizer: Any, messages: Sequence[Mapping[str, str]], add_generation_prompt: bool) -> int:

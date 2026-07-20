@@ -36,12 +36,8 @@ def validate_sft_dir(config: Mapping[str, Any], sft_dir: str | Path, smoke_test:
         raise ValueError(f"SFT run is not completed: {root}")
     if run_config.get("training_stage") != "sft":
         raise ValueError(f"SFT run directory has wrong training_stage: {root}")
-    expected_mode = str(config["project"]["run_mode"])
-    source_config = run_config.get("config_path", "")
-    if expected_mode not in str(source_config) and run_config.get("smoke_test") is False:
-        recorded_dataset = str(run_config.get("dataset_paths", {}).get("sft", ""))
-        if f"/{expected_mode}/" not in recorded_dataset:
-            raise ValueError(f"SFT run does not appear to match run_mode={expected_mode}: {root}")
+    _validate_sft_run_mode(config, run_config, root)
+    _validate_sft_model_identity(config, run_config, root)
     if run_config.get("smoke_test") is True and not smoke_test:
         raise ValueError("Non-smoke DPO run cannot initialize from a smoke SFT adapter")
     for path in (adapter_dir / "adapter_model.safetensors", adapter_dir / "adapter_config.json"):
@@ -55,9 +51,38 @@ def validate_sft_dir(config: Mapping[str, Any], sft_dir: str | Path, smoke_test:
         "tokenizer_dir": str(tokenizer_dir),
         "run_config_path": str(run_config_path),
         "smoke_test": bool(run_config.get("smoke_test")),
+        "run_mode": run_config.get("run_mode"),
+        "model": run_config.get("model", {}),
         "dataset_counts": run_config.get("dataset_counts", {}),
         "base_sft_evaluation": run_config.get("base_sft_evaluation", {}),
     }
+
+
+def _validate_sft_run_mode(config: Mapping[str, Any], run_config: Mapping[str, Any], root: Path) -> None:
+    expected_mode = str(config["project"]["run_mode"])
+    recorded_mode = run_config.get("run_mode")
+    if recorded_mode is not None:
+        if str(recorded_mode) != expected_mode:
+            raise ValueError(f"SFT run_mode={recorded_mode!r} does not match DPO run_mode={expected_mode!r}: {root}")
+        return
+
+    recorded_dataset = str(run_config.get("dataset_paths", {}).get("sft", ""))
+    if f"/{expected_mode}/" not in recorded_dataset:
+        raise ValueError(f"SFT run does not appear to match run_mode={expected_mode}: {root}")
+
+
+def _validate_sft_model_identity(config: Mapping[str, Any], run_config: Mapping[str, Any], root: Path) -> None:
+    expected = config["model"]
+    recorded = run_config.get("model") if isinstance(run_config.get("model"), Mapping) else {}
+    loader = run_config.get("model_loader") if isinstance(run_config.get("model_loader"), Mapping) else {}
+    recorded_revision = recorded.get("revision") or loader.get("revision")
+    if recorded_revision and str(recorded_revision) != str(expected["revision"]):
+        raise ValueError(f"SFT revision={recorded_revision!r} does not match DPO revision={expected['revision']!r}: {root}")
+
+    expected_remote = str(expected.get("modelscope_name_or_path") or expected.get("remote_name_or_path") or "")
+    recorded_remote = str(recorded.get("modelscope_name_or_path") or loader.get("modelscope_name_or_path") or loader.get("remote_name_or_path") or "")
+    if recorded_remote and expected_remote and recorded_remote != expected_remote:
+        raise ValueError(f"SFT model={recorded_remote!r} does not match DPO model={expected_remote!r}: {root}")
 
 
 def load_policy_from_sft_adapter(config: Mapping[str, Any], sft_adapter_dir: str | Path, tokenizer_dir: str | Path) -> LoadedModel:

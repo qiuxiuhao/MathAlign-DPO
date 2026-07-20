@@ -124,11 +124,13 @@ def train_dpo(
             "training_stage": "dpo",
             "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "config_path": str(config_path),
+            "run_mode": str(config["project"]["run_mode"]),
             "output_dir": str(out_dir),
             "smoke_test": smoke_test,
             "runtime_overrides": overrides,
             "runtime": runtime,
             "sft_source": sft_source,
+            "model": model_identity(config),
             "model_loader": policy_metadata,
             "tokenizer": tokenizer_metadata,
             "dataset_paths": {"dpo": str(datasets.path), "evaluation": str(Path(str(config["data"][f"{config['project']['run_mode']}_dir"])) / "evaluation")},
@@ -290,6 +292,19 @@ def dpo_runtime_metadata(config: Mapping[str, Any]) -> dict[str, Any]:
         "max_length": int(dpo["max_length"]),
         "max_prompt_length_checked": int(dpo["max_prompt_length"]),
         "reference_policy": "trl_peft_ref_adapter",
+    }
+
+
+def model_identity(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return stable model identity fields for run metadata."""
+
+    model = config["model"]
+    return {
+        "name_or_path": str(model["name_or_path"]),
+        "modelscope_name_or_path": str(model.get("modelscope_name_or_path") or ""),
+        "remote_name_or_path": str(model.get("remote_name_or_path") or ""),
+        "revision": str(model["revision"]),
+        "torch_dtype": str(model["torch_dtype"]),
     }
 
 

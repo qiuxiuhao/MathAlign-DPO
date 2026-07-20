@@ -46,7 +46,6 @@ data:
   source_split: train
   train_samples: 256
   validation_samples: 32
-  evaluation_samples: 32
   train_ratio: 0.95
   validation_ratio: 0.025
   evaluation_ratio: 0.025

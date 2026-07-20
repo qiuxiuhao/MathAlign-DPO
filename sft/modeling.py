@@ -160,7 +160,19 @@ def validate_runtime(config: Mapping[str, Any]) -> dict[str, Any]:
         available = bool(torch.cuda.is_available())
         if not available:
             raise RuntimeError("CUDA backend unavailable: torch.cuda.is_available()=False")
-        return {"backend": "cuda", "device": device, "cuda_is_available": available}
+        device_index = _cuda_device_index(torch, device)
+        device_name = torch.cuda.get_device_name(device_index)
+        expected = config["runtime"].get("expected_device_name_contains")
+        if expected and str(expected) not in device_name:
+            raise RuntimeError(f"CUDA device {device_index} is {device_name!r}, expected name containing {expected!r}")
+        return {
+            "backend": "cuda",
+            "device": device,
+            "cuda_is_available": available,
+            "cuda_device_index": device_index,
+            "cuda_device_name": device_name,
+            "cuda_device_count": int(torch.cuda.device_count()),
+        }
     raise ValueError(f"runtime.backend must be mps or cuda, got {backend!r}")
 
 
@@ -268,6 +280,11 @@ def _torch_dtype(torch: Any, dtype_name: str) -> Any:
     if dtype_name in {"float32", "fp32"}:
         return torch.float32
     raise ValueError(f"Unsupported torch dtype: {dtype_name}")
+
+
+def _cuda_device_index(torch: Any, device: str) -> int:
+    parsed = torch.device(device)
+    return int(parsed.index) if parsed.index is not None else 0
 
 
 def _import_torch() -> Any:

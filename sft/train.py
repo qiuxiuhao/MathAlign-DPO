@@ -1,4 +1,4 @@
-"""Standalone Stage 2 Mini SFT training entrypoint."""
+"""Standalone Stage 2 SFT training entrypoint."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the Stage 2 SFT CLI parser."""
 
     parser = argparse.ArgumentParser(description="Train SFT from Stage 1 Hugging Face Datasets.")
-    parser.add_argument("--config", required=True, help="Path to the Mini YAML config.")
+    parser.add_argument("--config", required=True, help="Path to one YAML config.")
     parser.add_argument("--smoke-test", action="store_true", help="Use smoke training/evaluation limits from config.")
     parser.add_argument("--output-dir", default=None, help="Override output directory. Defaults to config.sft.output_dir.")
     parser.add_argument("--train-samples", type=int, default=None, help="Use the first N train rows for debugging.")
@@ -59,7 +59,7 @@ def train_sft(
     max_steps: int | None = None,
     overwrite: bool = False,
 ) -> dict[str, Any]:
-    """Run Mini SFT training, adapter reload validation, and Base/SFT evaluation."""
+    """Run SFT training, adapter reload validation, and Base/SFT evaluation."""
 
     original_config = load_config(config_path)
     config, overrides = apply_runtime_overrides(
@@ -110,13 +110,18 @@ def train_sft(
             "training_stage": "sft",
             "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "config_path": str(config_path),
+            "run_mode": str(config["project"]["run_mode"]),
             "output_dir": str(out_dir),
             "smoke_test": smoke_test,
             "runtime_overrides": overrides,
             "runtime": runtime,
+            "model": model_identity(config),
             "model_loader": loaded.metadata,
             "tokenizer": tokenizer_metadata,
-            "dataset_paths": {"sft": str(datasets.path), "evaluation": str(Path(str(config["data"]["mini_dir"])) / "evaluation")},
+            "dataset_paths": {
+                "sft": str(datasets.path),
+                "evaluation": str(Path(str(config["data"][f"{config['project']['run_mode']}_dir"])) / "evaluation"),
+            },
             "dataset_counts": {"train": len(datasets.train), "validation": len(datasets.validation)},
             "train_metrics": train_metrics,
             "eval_metrics": eval_metrics,
@@ -170,7 +175,7 @@ def train_with_trl(
 
 
 def sft_config(trl: Any, config: Mapping[str, Any], output_dir: Path) -> Any:
-    """Create a TRL SFTConfig for Mini SFT."""
+    """Create a TRL SFTConfig from YAML values."""
 
     sft = config["sft"]
     runtime = config["runtime"]
@@ -269,6 +274,19 @@ def assert_finite_metrics(metrics: Sequence[Mapping[str, Any]], log_history: Seq
             if key.endswith("loss") or key == "loss":
                 if value is not None and not math.isfinite(float(value)):
                     raise FloatingPointError(f"Non-finite metric {key}: {value}")
+
+
+def model_identity(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return stable model identity fields for later adapter validation."""
+
+    model = config["model"]
+    return {
+        "name_or_path": str(model["name_or_path"]),
+        "modelscope_name_or_path": str(model.get("modelscope_name_or_path") or ""),
+        "remote_name_or_path": str(model.get("remote_name_or_path") or ""),
+        "revision": str(model["revision"]),
+        "torch_dtype": str(model["torch_dtype"]),
+    }
 
 
 def prepare_output_dir(path: Path, overwrite: bool) -> None:

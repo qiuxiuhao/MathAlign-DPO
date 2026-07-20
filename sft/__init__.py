@@ -1,2 +1,1 @@
-"""Standalone Mini SFT training and Base/SFT evaluation package."""
-
+"""Standalone SFT training and Base/SFT evaluation package."""
