@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from configs.load_config import load_config
-from dpo.modeling import validate_sft_dir
 from evaluation.common import write_json
 from evaluation.evaluate import evaluate_base_sft_dpo
 from sft.modeling import validate_runtime
@@ -67,7 +66,7 @@ def run_evaluation(
     start = time.perf_counter()
     try:
         runtime = validate_runtime(config)
-        sft_source = validate_sft_dir(config, sft_dir=sft_root, smoke_test=smoke_test)
+        sft_source = validate_sft_evaluation_dir(config, sft_dir=sft_root, smoke_test=smoke_test)
         dpo_source = validate_dpo_dir(config, dpo_dir=dpo_root, smoke_test=smoke_test)
         evaluation_summary = evaluate_base_sft_dpo(
             config,
@@ -132,51 +131,111 @@ def apply_evaluation_overrides(
     return copied, overrides
 
 
-def validate_dpo_dir(config: Mapping[str, Any], dpo_dir: str | Path, smoke_test: bool) -> dict[str, Any]:
-    """Validate that a completed DPO run can be evaluated."""
+def validate_sft_evaluation_dir(config: Mapping[str, Any], sft_dir: str | Path, smoke_test: bool) -> dict[str, Any]:
+    """Validate that a completed SFT run has a best adapter for Stage 4 evaluation."""
 
-    root = Path(dpo_dir)
+    return _validate_adapter_run_dir(
+        config,
+        root=Path(sft_dir),
+        training_stage="sft",
+        dataset_key="sft",
+        label="SFT",
+        smoke_test=smoke_test,
+    )
+
+
+def validate_dpo_dir(config: Mapping[str, Any], dpo_dir: str | Path, smoke_test: bool) -> dict[str, Any]:
+    """Validate that a completed DPO run has a best adapter for Stage 4 evaluation."""
+
+    return _validate_adapter_run_dir(
+        config,
+        root=Path(dpo_dir),
+        training_stage="dpo",
+        dataset_key="dpo",
+        label="DPO",
+        smoke_test=smoke_test,
+    )
+
+
+def _validate_adapter_run_dir(
+    config: Mapping[str, Any],
+    root: Path,
+    training_stage: str,
+    dataset_key: str,
+    label: str,
+    smoke_test: bool,
+) -> dict[str, Any]:
+    root = Path(root)
     run_config_path = root / "run_config.json"
-    adapter_dir = root / "adapter"
+    latest_adapter_dir = root / "adapter"
     tokenizer_dir = root / "tokenizer"
     if not run_config_path.exists():
-        raise FileNotFoundError(f"DPO run_config.json is missing: {run_config_path}")
+        raise FileNotFoundError(f"{label} run_config.json is missing: {run_config_path}")
     with run_config_path.open("r", encoding="utf-8") as handle:
         run_config = json.load(handle)
     if run_config.get("status") != "completed":
-        raise ValueError(f"DPO run is not completed: {root}")
-    if run_config.get("training_stage") != "dpo":
-        raise ValueError(f"DPO run directory has wrong training_stage: {root}")
-    _validate_run_mode(config, run_config, root, label="DPO")
-    _validate_model_identity(config, run_config, root, label="DPO")
+        raise ValueError(f"{label} run is not completed: {root}")
+    if run_config.get("training_stage") != training_stage:
+        raise ValueError(f"{label} run directory has wrong training_stage: {root}")
+    _validate_run_mode(config, run_config, root, label=label, dataset_key=dataset_key)
+    _validate_model_identity(config, run_config, root, label=label)
     if run_config.get("smoke_test") is True and not smoke_test:
-        raise ValueError("Non-smoke Stage 4 evaluation cannot use a smoke DPO adapter")
+        raise ValueError(f"Non-smoke Stage 4 evaluation cannot use a smoke {label} adapter")
+    adapter_dir = _best_adapter_dir(root, run_config, label)
     for path in (adapter_dir / "adapter_model.safetensors", adapter_dir / "adapter_config.json"):
         if not path.exists():
-            raise FileNotFoundError(f"DPO adapter artifact is missing: {path}")
+            raise FileNotFoundError(f"{label} best adapter artifact is missing: {path}")
     if not tokenizer_dir.exists():
-        raise FileNotFoundError(f"DPO tokenizer directory is missing: {tokenizer_dir}")
-    return {
+        raise FileNotFoundError(f"{label} tokenizer directory is missing: {tokenizer_dir}")
+    source = {
         "run_dir": str(root),
         "adapter_dir": str(adapter_dir),
+        "adapter_selection": "best",
+        "latest_adapter_dir": str(latest_adapter_dir),
+        "best_adapter_dir": str(adapter_dir),
         "tokenizer_dir": str(tokenizer_dir),
         "run_config_path": str(run_config_path),
         "smoke_test": bool(run_config.get("smoke_test")),
         "run_mode": run_config.get("run_mode"),
         "model": run_config.get("model", {}),
         "dataset_counts": run_config.get("dataset_counts", {}),
-        "sft_source": run_config.get("sft_source", {}),
+        "adapter_paths": run_config.get("adapter_paths", {}),
+        "best_adapter": run_config.get("best_adapter", {}),
     }
+    if training_stage == "dpo":
+        source["sft_source"] = run_config.get("sft_source", {})
+    return source
 
 
-def _validate_run_mode(config: Mapping[str, Any], run_config: Mapping[str, Any], root: Path, label: str) -> None:
+def _best_adapter_dir(root: Path, run_config: Mapping[str, Any], label: str) -> Path:
+    adapter_paths = run_config.get("adapter_paths") if isinstance(run_config.get("adapter_paths"), Mapping) else {}
+    configured = adapter_paths.get("best")
+    candidates = [root / "best_adapter"]
+    if configured:
+        candidate = Path(str(configured))
+        candidates.append(candidate)
+        if not candidate.is_absolute():
+            candidates.append(root / candidate)
+    for candidate in candidates:
+        if (candidate / "adapter_model.safetensors").exists() and (candidate / "adapter_config.json").exists():
+            return candidate
+    raise FileNotFoundError(f"{label} best_adapter directory is missing or incomplete under {root}")
+
+
+def _validate_run_mode(
+    config: Mapping[str, Any],
+    run_config: Mapping[str, Any],
+    root: Path,
+    label: str,
+    dataset_key: str,
+) -> None:
     expected_mode = str(config["project"]["run_mode"])
     recorded_mode = run_config.get("run_mode")
     if recorded_mode is not None:
         if str(recorded_mode) != expected_mode:
             raise ValueError(f"{label} run_mode={recorded_mode!r} does not match config run_mode={expected_mode!r}: {root}")
         return
-    recorded_dataset = str(run_config.get("dataset_paths", {}).get("dpo", ""))
+    recorded_dataset = str(run_config.get("dataset_paths", {}).get(dataset_key, ""))
     if f"/{expected_mode}/" not in recorded_dataset:
         raise ValueError(f"{label} run does not appear to match run_mode={expected_mode}: {root}")
 
@@ -202,6 +261,7 @@ def evaluation_runtime_metadata(config: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "output_dir": str(evaluation["output_dir"]),
         "samples": int(evaluation["samples"]),
+        "batch_size": int(evaluation["batch_size"]),
         "max_new_tokens": int(evaluation["max_new_tokens"]),
         "do_sample": bool(evaluation.get("do_sample", False)),
         "temperature": float(evaluation["temperature"]),
@@ -224,4 +284,3 @@ def prepare_output_dir(path: Path, overwrite: bool) -> None:
 
 if __name__ == "__main__":
     main()
-

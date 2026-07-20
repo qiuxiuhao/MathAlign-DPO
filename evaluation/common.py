@@ -29,16 +29,19 @@ def generate_predictions(
     batch_size = int(config["evaluation"].get("batch_size", 1))
     if batch_size <= 0:
         raise ValueError("evaluation.batch_size must be positive")
+    if bool(config["evaluation"].get("do_sample", False)):
+        raise ValueError("Stage 4 unified evaluation requires evaluation.do_sample=false")
+    if int(config["evaluation"]["num_beams"]) != 1:
+        raise ValueError("Stage 4 unified evaluation requires evaluation.num_beams=1")
+    max_new_tokens = int(config["evaluation"]["max_new_tokens"])
+    stop_token_ids = _generation_stop_token_ids(tokenizer)
     generation_config = {
-        "max_new_tokens": int(config["evaluation"]["max_new_tokens"]),
-        "do_sample": bool(config["evaluation"].get("do_sample", False)),
-        "num_beams": int(config["evaluation"]["num_beams"]),
+        "max_new_tokens": max_new_tokens,
+        "do_sample": False,
+        "num_beams": 1,
         "pad_token_id": tokenizer.pad_token_id,
-        "eos_token_id": tokenizer.eos_token_id,
+        "eos_token_id": sorted(stop_token_ids),
     }
-    if generation_config["do_sample"]:
-        generation_config["temperature"] = float(config["evaluation"]["temperature"])
-        generation_config["top_p"] = float(config["evaluation"]["top_p"])
     original_padding_side = getattr(tokenizer, "padding_side", None)
     tokenizer.padding_side = "left"
     try:
@@ -60,17 +63,35 @@ def generate_predictions(
                 padding=True,
                 add_special_tokens=False,
             ).to(str(config["runtime"]["device"]))
+            _synchronize_cuda(torch, str(config["runtime"]["device"]))
             start = time.perf_counter()
             with torch.inference_mode():
                 generated = model.generate(**encoded, **generation_config)
+            _synchronize_cuda(torch, str(config["runtime"]["device"]))
             seconds_per_example = (time.perf_counter() - start) / len(batch)
             prompt_width = int(encoded["input_ids"].shape[-1])
             for row, prompt_messages, generated_ids in zip(batch, prompt_messages_batch, generated):
-                new_tokens = generated_ids[prompt_width:]
-                generated_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
-                predicted = extract_answer(generated_text)
+                raw_new_tokens = generated_ids[prompt_width:].detach().cpu().tolist()
+                new_token_ids, finish_reason = _real_generated_token_ids(
+                    raw_new_tokens,
+                    stop_token_ids=stop_token_ids,
+                    pad_token_id=tokenizer.pad_token_id,
+                    max_new_tokens=max_new_tokens,
+                )
+                hit_max_new_tokens = finish_reason == "length" and len(new_token_ids) >= max_new_tokens
+                generated_text = tokenizer.decode(new_token_ids, skip_special_tokens=True)
+                predicted, extraction_method = extract_answer(generated_text, finish_reason=finish_reason)
                 reference = normalize_answer(str(row["reference_answer"]))
                 normalized_predicted = normalize_answer(predicted)
+                strict_exact_match = (
+                    normalized_predicted is not None and reference is not None and normalized_predicted == reference
+                )
+                math_equivalent, match_method = compare_answers(
+                    predicted,
+                    str(row["reference_answer"]),
+                    prompt_messages=prompt_messages,
+                    strict_exact_match=strict_exact_match,
+                )
                 output.append(
                     {
                         "schema_version": "1.0",
@@ -84,10 +105,14 @@ def generate_predictions(
                         "reference_answer": str(row["reference_answer"]),
                         "normalized_reference_answer": reference,
                         "answer_extracted": normalized_predicted is not None,
-                        "exact_match": normalized_predicted is not None
-                        and reference is not None
-                        and normalized_predicted == reference,
-                        "output_tokens": int(new_tokens.shape[-1]),
+                        "extraction_method": extraction_method,
+                        "strict_exact_match": strict_exact_match,
+                        "math_equivalent": math_equivalent,
+                        "match_method": match_method,
+                        "exact_match": strict_exact_match,
+                        "finish_reason": finish_reason,
+                        "hit_max_new_tokens": hit_max_new_tokens,
+                        "output_tokens": len(new_token_ids),
                         "generation_seconds": round(seconds_per_example, 6),
                     }
                 )
@@ -117,13 +142,23 @@ def summarize_predictions(predictions: Sequence[Mapping[str, Any]], model_stages
         if not rows:
             raise ValueError(f"No predictions for {stage}")
         extracted = sum(1 for row in rows if bool(row["answer_extracted"]))
-        exact = sum(1 for row in rows if bool(row["exact_match"]))
+        strict_exact = sum(1 for row in rows if bool(row["strict_exact_match"]))
+        math_matches = sum(1 for row in rows if bool(row["math_equivalent"]))
+        eos_finishes = sum(1 for row in rows if row["finish_reason"] == "eos")
+        length_finishes = sum(1 for row in rows if row["finish_reason"] == "length")
+        max_token_hits = sum(1 for row in rows if bool(row["hit_max_new_tokens"]))
         tokens = [int(row["output_tokens"]) for row in rows]
         seconds = [float(row["generation_seconds"]) for row in rows]
         summary[stage] = {
             "num_examples": len(rows),
             "answer_extraction_rate": extracted / len(rows),
-            "exact_match": exact / len(rows),
+            "strict_exact_match": strict_exact / len(rows),
+            "math_equivalent": math_matches / len(rows),
+            "exact_match": strict_exact / len(rows),
+            "eos_finish_rate": eos_finishes / len(rows),
+            "length_truncation_rate": length_finishes / len(rows),
+            "hit_max_new_tokens_rate": max_token_hits / len(rows),
+            "average_real_output_tokens": sum(tokens) / len(tokens),
             "average_output_tokens": sum(tokens) / len(tokens),
             "average_generation_seconds": sum(seconds) / len(seconds),
         }
@@ -133,38 +168,42 @@ def summarize_predictions(predictions: Sequence[Mapping[str, Any]], model_stages
 def case_samples(predictions: Sequence[Mapping[str, Any]], limit: int = 5) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return a few correct and incorrect examples for review."""
 
-    correct = [dict(row) for row in predictions if bool(row["exact_match"])][:limit]
-    errors = [dict(row) for row in predictions if not bool(row["exact_match"])][:limit]
+    correct = [dict(row) for row in predictions if bool(row["math_equivalent"])][:limit]
+    errors = [dict(row) for row in predictions if not bool(row["math_equivalent"])][:limit]
     return correct, errors
 
 
-def extract_answer(text: str) -> str | None:
+def extract_answer(text: str, finish_reason: str = "eos") -> tuple[str | None, str]:
     """Extract a final answer from generated text with deterministic simple rules."""
 
     boxed = _extract_last_boxed(text)
     if boxed is not None:
-        return boxed
+        return boxed, "boxed"
     hash_answers = re.findall(r"####\s*([^\n]+)", text)
     if hash_answers:
         answer = _strip_answer(hash_answers[-1])
         if answer:
-            return answer
+            return answer, "hash_answer"
     label_answers = re.findall(
-        r"(?is)(?:final\s+answer|correct\s+answer|answer)\s*(?:is|=|:)?\s*(?:\\boxed\{)?\s*([A-Za-z]|\(?[A-E]\)?|[-+]?\d+(?:\.\d+)?|[-+]?\d+\s*/\s*[-+]?\d+|\\frac\{[-+]?\d+\}\{[-+]?\d+\})",
+        r"(?is)(?:final\s+answer|correct\s+answer|answer)\s*(?:is|=|:)?\s*(?:\\boxed\{)?\s*(\(?[A-E]\)?|[-+]?\d+(?:\.\d+)?%?|[-+]?\d+\s*/\s*[-+]?\d+|\\frac\{[-+]?\d+\}\{[-+]?\d+\})",
         text,
     )
     if label_answers:
         answer = _strip_answer(label_answers[-1])
         if answer:
-            return answer
-    tail = text[-500:]
-    line_answer = _extract_final_line_answer(text)
+            return answer, "labeled_answer"
+    line_answer, line_method = _extract_final_line_answer(text)
     if line_answer is not None:
-        return line_answer
+        if finish_reason == "length" and line_method != "final_line_choice":
+            return None, "truncated_no_final_answer"
+        return line_answer, line_method
+    if finish_reason == "length":
+        return None, "truncated_no_final_answer"
+    tail = text[-500:]
     numbers = re.findall(r"\\frac\{[-+]?\d+\}\{[-+]?\d+\}|[-+]?\d+\s*/\s*[-+]?\d+|[-+]?\d+(?:\.\d+)?", tail)
     if numbers:
-        return _strip_answer(numbers[-1])
-    return None
+        return _strip_answer(numbers[-1]), "tail_number"
+    return None, "not_found"
 
 
 def normalize_answer(answer: str | None) -> str | None:
@@ -230,13 +269,213 @@ def json_safe(value: Any) -> Any:
     return value
 
 
-def _extract_final_line_answer(text: str) -> str | None:
+def compare_answers(
+    predicted: str | None,
+    reference: str,
+    prompt_messages: Sequence[Mapping[str, Any]] | Sequence[Any],
+    strict_exact_match: bool,
+) -> tuple[bool, str]:
+    """Return strict-or-math answer match status and the method that matched."""
+
+    if predicted is None:
+        return False, "no_prediction"
+    if strict_exact_match:
+        return True, "strict_exact"
+
+    predicted_numeric = _answer_decimal(predicted)
+    reference_numeric = _answer_decimal(reference)
+    if predicted_numeric is not None and reference_numeric is not None and predicted_numeric == reference_numeric:
+        return True, "numeric_equivalent"
+
+    predicted_unitless = _strip_trailing_unit(predicted)
+    reference_unitless = _strip_trailing_unit(reference)
+    if predicted_unitless and reference_unitless:
+        normalized_predicted = normalize_answer(predicted_unitless)
+        normalized_reference = normalize_answer(reference_unitless)
+        if normalized_predicted is not None and normalized_predicted == normalized_reference:
+            return True, "unit_stripped_exact"
+
+    choice_match = _choice_content_match(predicted, reference, prompt_messages)
+    if choice_match is not None:
+        return choice_match
+    return False, "none"
+
+
+def _generation_stop_token_ids(tokenizer: Any) -> set[int]:
+    ids: set[int] = set()
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if eos_token_id is not None:
+        ids.add(int(eos_token_id))
+    if hasattr(tokenizer, "convert_tokens_to_ids"):
+        im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+        unk_id = getattr(tokenizer, "unk_token_id", None)
+        if im_end_id is not None and im_end_id != unk_id and int(im_end_id) >= 0:
+            ids.add(int(im_end_id))
+    if hasattr(tokenizer, "encode"):
+        encoded = tokenizer.encode("<|im_end|>", add_special_tokens=False)
+        if len(encoded) == 1:
+            ids.add(int(encoded[0]))
+    if not ids:
+        raise ValueError("Tokenizer must provide an EOS or <|im_end|> stop token")
+    return ids
+
+
+def _real_generated_token_ids(
+    token_ids: Sequence[int],
+    stop_token_ids: set[int],
+    pad_token_id: int | None,
+    max_new_tokens: int,
+) -> tuple[list[int], str]:
+    limited = [int(token_id) for token_id in token_ids[:max_new_tokens]]
+    for index, token_id in enumerate(limited):
+        if token_id in stop_token_ids:
+            return limited[:index], "eos"
+    if pad_token_id is not None and int(pad_token_id) not in stop_token_ids:
+        while limited and limited[-1] == int(pad_token_id):
+            limited.pop()
+    return limited, "length"
+
+
+def _synchronize_cuda(torch: Any, device: str) -> None:
+    if device.startswith("cuda") and torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def _extract_final_line_answer(text: str) -> tuple[str | None, str]:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     for line in reversed(lines[-3:]):
         cleaned = _strip_answer(line)
-        if re.fullmatch(r"\(?[A-E]\)?|\\frac\{[-+]?\d+\}\{[-+]?\d+\}|[-+]?\d+\s*/\s*[-+]?\d+|[-+]?\d+(?:\.\d+)?", cleaned):
-            return cleaned
+        if re.fullmatch(r"\(?[A-E]\)?", cleaned):
+            return cleaned, "final_line_choice"
+        if re.fullmatch(r"\\frac\{[-+]?\d+\}\{[-+]?\d+\}|[-+]?\d+\s*/\s*[-+]?\d+|[-+]?\d+(?:\.\d+)?%?", cleaned):
+            return cleaned, "final_line_numeric"
+    return None, "not_found"
+
+
+def _answer_decimal(value: str | None) -> Fraction | None:
+    if value is None:
+        return None
+    compact = _strip_trailing_unit(value)
+    compact = _clean_math_text(compact)
+    if not compact:
+        return None
+    percent = compact.endswith("%")
+    if percent:
+        compact = compact[:-1].strip()
+    latex = re.fullmatch(r"\\frac\{([-+]?\d+)\}\{([-+]?\d+)\}", compact)
+    slash = re.fullmatch(r"([-+]?\d+)\s*/\s*([-+]?\d+)", compact)
+    try:
+        if latex:
+            denominator = int(latex.group(2))
+            if denominator == 0:
+                return None
+            number = Fraction(int(latex.group(1)), denominator)
+        elif slash:
+            denominator = int(slash.group(2))
+            if denominator == 0:
+                return None
+            number = Fraction(int(slash.group(1)), denominator)
+        elif re.fullmatch(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", compact):
+            number = Fraction(Decimal(compact))
+        else:
+            return None
+    except (InvalidOperation, ValueError, ZeroDivisionError):
+        return None
+    return number / 100 if percent else number
+
+
+def _strip_trailing_unit(value: str | None) -> str:
+    if value is None:
+        return ""
+    cleaned = _clean_math_text(value)
+    numeric = r"(?:\\frac\{[-+]?\d+\}\{[-+]?\d+\}|[-+]?\d+\s*/\s*[-+]?\d+|[-+]?(?:\d+(?:\.\d*)?|\.\d+)\s*%?)"
+    match = re.fullmatch(rf"\s*({numeric})\s*(?:[A-Za-z°²³^/\\{{}}\-\s]+)?\s*", cleaned)
+    if match:
+        return re.sub(r"\s+%", "%", match.group(1).strip())
+    return cleaned
+
+
+def _clean_math_text(value: str) -> str:
+    cleaned = value.strip()
+    boxed = _extract_last_boxed(cleaned)
+    if boxed is not None:
+        cleaned = boxed
+    cleaned = re.sub(r"\\text\{[^{}]*\}", "", cleaned)
+    cleaned = cleaned.replace("\\(", "").replace("\\)", "").replace("$", "")
+    cleaned = cleaned.replace("\\left", "").replace("\\right", "")
+    cleaned = cleaned.replace(",", "").strip().rstrip(".。,:;")
+    return cleaned
+
+
+def _choice_content_match(
+    predicted: str,
+    reference: str,
+    prompt_messages: Sequence[Mapping[str, Any]] | Sequence[Any],
+) -> tuple[bool, str] | None:
+    options = _choice_options(prompt_messages)
+    if not options:
+        return None
+    predicted_letter = _choice_letter(predicted)
+    reference_letter = _choice_letter(reference)
+    if predicted_letter is not None and predicted_letter in options:
+        if _answers_equivalent_basic(options[predicted_letter], reference):
+            return True, "choice_letter_to_content"
+    if reference_letter is not None and reference_letter in options:
+        if _answers_equivalent_basic(predicted, options[reference_letter]):
+            return True, "choice_content_to_letter"
     return None
+
+
+def _choice_options(prompt_messages: Sequence[Mapping[str, Any]] | Sequence[Any]) -> dict[str, str]:
+    text = "\n".join(_message_content(message) for message in prompt_messages)
+    options: dict[str, str] = {}
+    multiline = re.finditer(
+        r"(?ims)(?:^|\n)\s*\(?([A-E])\)?[\.\):]\s*(.+?)(?=(?:\n\s*\(?[A-E]\)?[\.\):])|\Z)",
+        text,
+    )
+    for match in multiline:
+        content = _clean_choice_content(match.group(2))
+        if content:
+            options[match.group(1).upper()] = content
+    if options:
+        return options
+    inline = re.finditer(r"(?i)\b([A-E])[\.\)]\s*([^A-E\n]+?)(?=\s+[A-E][\.\)]|\Z)", text)
+    for match in inline:
+        content = _clean_choice_content(match.group(2))
+        if content:
+            options[match.group(1).upper()] = content
+    return options
+
+
+def _message_content(message: Mapping[str, Any] | Any) -> str:
+    if isinstance(message, Mapping):
+        return str(message.get("content", ""))
+    return str(message)
+
+
+def _clean_choice_content(value: str) -> str:
+    return value.strip().rstrip(".。,:;")
+
+
+def _choice_letter(value: str | None) -> str | None:
+    if value is None:
+        return None
+    match = re.fullmatch(r"\(?([A-Ea-e])\)?", value.strip())
+    return match.group(1).upper() if match else None
+
+
+def _answers_equivalent_basic(left: str, right: str) -> bool:
+    normalized_left = normalize_answer(left)
+    normalized_right = normalize_answer(right)
+    if normalized_left is not None and normalized_left == normalized_right:
+        return True
+    left_number = _answer_decimal(left)
+    right_number = _answer_decimal(right)
+    if left_number is not None and right_number is not None and left_number == right_number:
+        return True
+    unitless_left = normalize_answer(_strip_trailing_unit(left))
+    unitless_right = normalize_answer(_strip_trailing_unit(right))
+    return unitless_left is not None and unitless_left == unitless_right
 
 
 def _extract_last_boxed(text: str) -> str | None:
