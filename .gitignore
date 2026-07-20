@@ -1,15 +1,60 @@
+# Data artifacts
 data/raw/
 data/processed/
-outputs/
+
+# Model weights and local model downloads
+model/
+models/
 checkpoints/
+outputs/
 logs/
 wandb/
+
+# Hugging Face / ModelScope local caches
 .cache/
+.huggingface/
+.modelscope/
+hf_cache/
+modelscope_cache/
+
+# Python caches and packaging artifacts
 __pycache__/
+*.py[cod]
+*$py.class
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 *.egg-info/
-*.pyc
-.DS_Store
 mathalign_dpo.egg-info/
-tests/__pycache__/
-model/Qwen2.5-0.5B-Instruct/
+build/
+dist/
+tests/
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Large ML artifacts
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.gguf
+*.onnx
+
+# Local logs and temporary files
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# OS / editor files
+.DS_Store
+.idea/
+.vscode/
