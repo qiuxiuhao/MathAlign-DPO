@@ -12,3 +12,4 @@ __pycache__/
 .DS_Store
 mathalign_dpo.egg-info/
 tests/__pycache__/
+model/Qwen2.5-0.5B-Instruct/
