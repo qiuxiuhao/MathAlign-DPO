@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import importlib
 import json
-import shutil
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from mathalign_dpo.data.write_outputs import sha256_file
 from mathalign_dpo.config.load_config import load_single_config
 from mathalign_dpo.training.model_loader import load_model_and_tokenizer, load_tokenizer, model_revision_metadata, validate_runtime_backend
 from mathalign_dpo.training.runtime_metadata import (
@@ -20,20 +19,18 @@ from mathalign_dpo.training.runtime_metadata import (
     write_json,
     write_jsonl,
 )
+from mathalign_dpo.training.run_artifacts import (
+    RunDirectories,
+    prepare_staged_output_dir as prepare_stage_staged_output_dir,
+    publish_staged_output as publish_stage_staged_output,
+    resolve_stage_output_dir,
+)
 from mathalign_dpo.training.sft_data import (
     assert_rows_within_max_length,
     load_sft_candidate_pools,
     select_tokenized_sft_data,
     validate_tokenizer_chat_template,
 )
-
-
-@dataclass(frozen=True)
-class RunDirectories:
-    """Final and staging directories for one SFT run."""
-
-    final_dir: Path
-    staging_dir: Path
 
 
 def train_sft_from_config(
@@ -90,6 +87,7 @@ def train_sft_from_config(
             target_validation_count=target_counts["validation"],
         )
         progress_metadata["dataset_counts"] = _dataset_counts(candidate_pools, tokenized)
+        progress_metadata["data_lineage"] = _data_lineage(run_config, tokenized)
         loaded = load_model_and_tokenizer(run_config, training_stage="sft")
         validate_tokenizer_chat_template(loaded.tokenizer)
         train_metrics, eval_metrics = _train_with_trl(run_config, loaded.model, loaded.tokenizer, tokenized, run_dirs.staging_dir)
@@ -115,6 +113,7 @@ def train_sft_from_config(
             "completed",
             {
                 "dataset_counts": _dataset_counts(candidate_pools, tokenized),
+                "data_lineage": _data_lineage(run_config, tokenized),
                 "tokenizer": tokenizer_metadata,
                 "token_statistics": tokenized.token_statistics,
                 "backend_preflight": backend_metadata,
@@ -157,9 +156,7 @@ def train_sft_from_config(
 def resolve_output_dir(config: Mapping[str, Any], run_id: str, output_dir: str | Path | None) -> Path:
     """Resolve the run output directory."""
 
-    if output_dir is not None:
-        return Path(output_dir)
-    return Path(str(config["sft"]["output_dir"])) / run_id
+    return resolve_stage_output_dir(config, run_id, output_dir, "sft")
 
 
 def prepare_output_dir(run_dir: Path, overwrite: bool) -> None:
@@ -180,40 +177,13 @@ def prepare_staged_output_dir(
 ) -> RunDirectories:
     """Prepare a staging directory without deleting old outputs."""
 
-    final_dir = resolve_output_dir(config, run_id, output_dir)
-    if final_dir.exists() and any(final_dir.iterdir()) and not overwrite:
-        raise FileExistsError(f"Refusing to overwrite non-empty SFT output directory: {final_dir}")
-    staging_dir = final_dir.parent / f".{final_dir.name}.{run_id}.staging"
-    if staging_dir.exists():
-        raise FileExistsError(f"Staging directory already exists: {staging_dir}")
-    staging_dir.mkdir(parents=True)
-    return RunDirectories(final_dir=final_dir, staging_dir=staging_dir)
+    return prepare_stage_staged_output_dir(config, run_id, output_dir, overwrite, "sft", "SFT")
 
 
 def publish_staged_output(run_dirs: RunDirectories, overwrite: bool) -> None:
     """Publish a completed staging directory while preserving old output on failure."""
 
-    final_dir = run_dirs.final_dir
-    staging_dir = run_dirs.staging_dir
-    backup_dir = final_dir.parent / f".{final_dir.name}.backup"
-    if backup_dir.exists():
-        raise FileExistsError(f"Backup directory already exists: {backup_dir}")
-    if final_dir.exists() and any(final_dir.iterdir()):
-        if not overwrite:
-            raise FileExistsError(f"Refusing to overwrite non-empty SFT output directory: {final_dir}")
-        final_dir.rename(backup_dir)
-    elif final_dir.exists():
-        final_dir.rmdir()
-    try:
-        staging_dir.rename(final_dir)
-    except BaseException:
-        if final_dir.exists() and final_dir != staging_dir:
-            shutil.rmtree(final_dir, ignore_errors=True)
-        if backup_dir.exists():
-            backup_dir.rename(final_dir)
-        raise
-    if backup_dir.exists():
-        shutil.rmtree(backup_dir)
+    publish_stage_staged_output(run_dirs, overwrite, "SFT")
 
 
 def reload_adapter_and_generate(
@@ -443,6 +413,18 @@ def _dataset_counts(candidate_pools: Any, tokenized: Any) -> dict[str, Any]:
         "after_token_filter": {
             "train": int(tokenized.token_statistics["train"]["kept_count"]),
             "validation": int(tokenized.token_statistics["validation"]["kept_count"]),
+        },
+    }
+
+
+def _data_lineage(config: Mapping[str, Any], tokenized: Any) -> dict[str, Any]:
+    stage2_manifest = Path(str(config["data"]["stage2_manifest_file"]))
+    return {
+        "stage2_manifest_file": str(stage2_manifest),
+        "stage2_manifest_sha256": sha256_file(stage2_manifest),
+        "selection_hashes": {
+            "train": tokenized.token_statistics["train"].get("selection_hash"),
+            "validation": tokenized.token_statistics["validation"].get("selection_hash"),
         },
     }
 

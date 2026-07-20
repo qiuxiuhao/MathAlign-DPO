@@ -164,6 +164,7 @@ def _validate_single_config(config: dict[str, Any], path: Path, expected_mode: s
     lora = config["lora"]
     sft = config["sft"]
     dpo = config["dpo"]
+    evaluation = config["evaluation"]
     runtime = config["runtime"]
     sft_optimizer = config["sft"].get("optimizer")
     dpo_optimizer = config["dpo"].get("optimizer")
@@ -195,6 +196,10 @@ def _validate_single_config(config: dict[str, Any], path: Path, expected_mode: s
         raise ValueError(f"{path}: Stage 4 supports only dpo.loss_type = sigmoid")
     if int(dpo.get("max_steps", 0)) <= 0:
         raise ValueError(f"{path}: dpo.max_steps must be positive")
+    if int(dpo.get("train_samples", 0)) <= 0:
+        raise ValueError(f"{path}: dpo.train_samples must be positive")
+    if int(dpo.get("validation_samples", 0)) <= 0:
+        raise ValueError(f"{path}: dpo.validation_samples must be positive")
     if int(dpo.get("max_length", 0)) <= 0:
         raise ValueError(f"{path}: dpo.max_length must be positive")
     if int(dpo.get("max_prompt_length", 0)) <= 0:
@@ -207,6 +212,16 @@ def _validate_single_config(config: dict[str, Any], path: Path, expected_mode: s
         raise ValueError(f"{path}: dpo.max_prompt_length must be less than dpo.max_length")
     if int(dpo["max_length"]) > int(model["max_length"]):
         raise ValueError(f"{path}: dpo.max_length must not exceed model.max_length")
+    if int(evaluation.get("samples", 0)) <= 0:
+        raise ValueError(f"{path}: evaluation.samples must be positive")
+    if int(evaluation.get("max_new_tokens", 0)) <= 0:
+        raise ValueError(f"{path}: evaluation.max_new_tokens must be positive")
+    if bool(evaluation.get("do_sample")):
+        raise ValueError(f"{path}: Stage 5 evaluation requires evaluation.do_sample = false")
+    if int(evaluation.get("num_beams", 0)) != 1:
+        raise ValueError(f"{path}: Stage 5 evaluation requires evaluation.num_beams = 1")
+    if int(config["smoke_test"].get("evaluation_samples", 0)) <= 0:
+        raise ValueError(f"{path}: smoke_test.evaluation_samples must be positive")
     if runtime.get("allow_cpu_fallback") is not False:
         raise ValueError(f"{path}: runtime.allow_cpu_fallback must be false")
     if backend == "mps":

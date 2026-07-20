@@ -25,6 +25,13 @@ REQUIRED_DEPENDENCIES = {
     "transformers",
     "trl",
 }
+PINNED_TRAINING_DEPENDENCIES = {
+    "accelerate": "1.14.0",
+    "peft": "0.17.1",
+    "torch": "2.13.0",
+    "transformers": "4.57.6",
+    "trl": "0.29.1",
+}
 
 
 class PackagingTests(unittest.TestCase):
@@ -37,6 +44,12 @@ class PackagingTests(unittest.TestCase):
         self.assertTrue(FORBIDDEN_MAC_DEPENDENCIES.isdisjoint(set(names)))
         for requirement in requirements:
             self.assertRegex(requirement, r"[<>=~!]=?")
+
+    def test_stage4_training_dependencies_are_exactly_pinned(self) -> None:
+        requirements = {_dependency_name(requirement): requirement for requirement in _read_requirements()}
+
+        for name, version in PINNED_TRAINING_DEPENDENCIES.items():
+            self.assertEqual(requirements[name], f"{name}=={version}")
 
     def test_pyproject_does_not_duplicate_runtime_dependencies(self) -> None:
         pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -115,6 +128,18 @@ class PackagingTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--sft-run-dir", result.stdout)
+
+    def test_evaluate_math_help_runs(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "scripts.evaluate_math", "--help"],
+            cwd=ROOT,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--dpo-run-dir", result.stdout)
 
 
 def _read_requirements() -> list[str]:

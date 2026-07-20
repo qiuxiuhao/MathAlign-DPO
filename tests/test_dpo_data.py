@@ -31,16 +31,15 @@ class FakeDPOTokenizer:
 
 
 class DPODataTests(unittest.TestCase):
-    def test_loads_mini_and_formal_pools_from_completed_manifest(self) -> None:
+    def test_loads_only_run_mode_pool_from_completed_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config = _write_stage2_dpo_fixture(root)
 
             pools = load_dpo_candidate_pools(config)
 
-            self.assertEqual([row["id"] for row in pools.train_initial_rows], ["train_a"])
-            self.assertEqual([row["id"] for row in pools.train_expanded_rows], ["train_a", "train_b"])
-            self.assertEqual(pools.candidate_counts["train"], {"initial": 1, "expanded": 2})
+            self.assertEqual([row["id"] for row in pools.train_rows], ["train_a"])
+            self.assertEqual(pools.candidate_counts["train"], {"run_mode": 1})
 
     def test_manifest_hash_mismatch_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -94,7 +93,19 @@ class DPODataTests(unittest.TestCase):
         self.assertEqual(counts["rejected_total"], 4)
         self.assertEqual(counts["chosen_completion"], 2)
 
-    def test_selects_exact_target_after_expanding_candidate_pool(self) -> None:
+    def test_rejects_source_ids_outside_mini_source_view(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = _write_stage2_dpo_fixture(
+                root,
+                mini_train_ids=["train_a"],
+                mini_train_source_ids=["other_source"],
+            )
+
+            with self.assertRaisesRegex(ValueError, "outside the mini source view"):
+                load_dpo_candidate_pools(config)
+
+    def test_fails_instead_of_expanding_candidate_pool(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config = _write_stage2_dpo_fixture(
@@ -109,19 +120,16 @@ class DPODataTests(unittest.TestCase):
             )
             pools = load_dpo_candidate_pools(config)
 
-            tokenized = select_tokenized_dpo_data(
-                pools,
-                FakeDPOTokenizer(),
-                max_length=8,
-                max_prompt_length=4,
-                seed=42,
-                target_train_count=2,
-                target_validation_count=1,
-            )
-
-            self.assertEqual(len(tokenized.train_rows), 2)
-            self.assertEqual(tokenized.token_statistics["train"]["selected_pool"], "expanded")
-            self.assertTrue(tokenized.token_statistics["train"]["selection_hash"])
+            with self.assertRaisesRegex(ValueError, "must not borrow rows from the formal pool"):
+                select_tokenized_dpo_data(
+                    pools,
+                    FakeDPOTokenizer(),
+                    max_length=8,
+                    max_prompt_length=4,
+                    seed=42,
+                    target_train_count=2,
+                    target_validation_count=1,
+                )
 
     def test_token_filtering_checks_prompt_and_total_limits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -156,6 +164,7 @@ class DPODataTests(unittest.TestCase):
 def _write_stage2_dpo_fixture(
     root: Path,
     mini_train_ids: list[str] | None = None,
+    mini_train_source_ids: list[str] | None = None,
     formal_train_ids: list[str] | None = None,
     train_rows: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
@@ -181,7 +190,11 @@ def _write_stage2_dpo_fixture(
                 "dpo": {
                     "train": mini_train_ids or ["train_a"],
                     "validation": ["val_a"],
-                }
+                },
+                "dpo_source_ids": {
+                    "train": mini_train_source_ids or mini_train_ids or ["train_a"],
+                    "validation": ["val_a"],
+                },
             },
             "formal": {
                 "dpo": {

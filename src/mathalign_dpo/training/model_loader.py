@@ -30,6 +30,13 @@ def load_tokenizer(config: Mapping[str, Any]) -> Any:
     return tokenizer
 
 
+def load_tokenizer_from_dir(tokenizer_dir: str | os.PathLike[str]) -> Any:
+    """Load a tokenizer artifact saved by an earlier training run."""
+
+    transformers = importlib.import_module("transformers")
+    return transformers.AutoTokenizer.from_pretrained(tokenizer_dir)
+
+
 def model_revision_metadata(config: Mapping[str, Any]) -> dict[str, str]:
     """Return configured and resolved model revision metadata."""
 
@@ -59,7 +66,11 @@ def load_model_and_tokenizer(config: Mapping[str, Any], training_stage: str = "s
     return LoadedModelAndTokenizer(model=model, tokenizer=tokenizer, metadata=metadata)
 
 
-def load_base_model_and_tokenizer(config: Mapping[str, Any], training_stage: str = "dpo") -> LoadedModelAndTokenizer:
+def load_base_model_and_tokenizer(
+    config: Mapping[str, Any],
+    training_stage: str = "dpo",
+    tokenizer_dir: str | os.PathLike[str] | None = None,
+) -> LoadedModelAndTokenizer:
     """Load a base model and tokenizer without attaching a fresh LoRA adapter."""
 
     if training_stage not in {"dpo", "reload"}:
@@ -69,7 +80,7 @@ def load_base_model_and_tokenizer(config: Mapping[str, Any], training_stage: str
     transformers = importlib.import_module("transformers")
 
     backend = str(config["runtime"]["backend"])
-    tokenizer = load_tokenizer(config)
+    tokenizer = load_tokenizer_from_dir(tokenizer_dir) if tokenizer_dir is not None else load_tokenizer(config)
     if backend == "mps":
         model, metadata = _load_mps_base_model(config, torch, transformers)
     elif backend == "cuda":
@@ -79,11 +90,15 @@ def load_base_model_and_tokenizer(config: Mapping[str, Any], training_stage: str
     return LoadedModelAndTokenizer(model=model, tokenizer=tokenizer, metadata=metadata)
 
 
-def load_policy_model_from_sft_adapter(config: Mapping[str, Any], sft_adapter_dir: str | os.PathLike[str]) -> LoadedModelAndTokenizer:
+def load_policy_model_from_sft_adapter(
+    config: Mapping[str, Any],
+    sft_adapter_dir: str | os.PathLike[str],
+    tokenizer_dir: str | os.PathLike[str] | None = None,
+) -> LoadedModelAndTokenizer:
     """Load the configured base model and attach a trainable SFT adapter for DPO."""
 
     peft = importlib.import_module("peft")
-    loaded = load_base_model_and_tokenizer(config, training_stage="dpo")
+    loaded = load_base_model_and_tokenizer(config, training_stage="dpo", tokenizer_dir=tokenizer_dir)
     base_model = loaded.model
     if str(config["runtime"]["backend"]) == "cuda" and hasattr(peft, "prepare_model_for_kbit_training"):
         base_model = peft.prepare_model_for_kbit_training(
@@ -104,6 +119,8 @@ def load_policy_model_from_sft_adapter(config: Mapping[str, Any], sft_adapter_di
         {
             "adapter_initialization": "stage3_sft",
             "sft_adapter_dir": str(sft_adapter_dir),
+            "tokenizer_initialization": "stage3_sft" if tokenizer_dir is not None else "configured_model",
+            "sft_tokenizer_dir": str(tokenizer_dir) if tokenizer_dir is not None else None,
             "lora": _lora_metadata(config),
         }
     )

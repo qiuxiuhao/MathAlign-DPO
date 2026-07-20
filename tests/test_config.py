@@ -44,10 +44,15 @@ class ConfigTests(unittest.TestCase):
         self.assertLess(configs.mini["dpo"]["max_prompt_length"], configs.mini["dpo"]["max_length"])
         self.assertEqual(configs.mini["dpo"]["adapter_reload_samples"], 1)
         self.assertEqual(configs.mini["dpo"]["adapter_reload_max_new_tokens"], 32)
+        self.assertEqual(configs.mini["dpo"]["train_samples"], 179)
+        self.assertEqual(configs.mini["dpo"]["validation_samples"], 21)
         self.assertEqual(configs.mini["model"]["torch_dtype"], "float16")
         self.assertRegex(configs.mini["model"]["revision"], r"^[0-9a-f]{40}$")
         self.assertIs(configs.mini["runtime"]["allow_cpu_fallback"], False)
         self.assertEqual(configs.mini["sft"]["adapter_reload_samples"], 3)
+        self.assertFalse(configs.mini["evaluation"]["do_sample"])
+        self.assertEqual(configs.mini["evaluation"]["num_beams"], 1)
+        self.assertEqual(configs.mini["evaluation"]["samples"], 32)
 
         self.assertEqual(configs.formal["runtime"]["backend"], "cuda")
         self.assertIs(configs.formal["quantization"]["enabled"], True)
@@ -96,4 +101,14 @@ class ConfigTests(unittest.TestCase):
             mini_path.write_text(text, encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "dpo.loss_type"):
+                load_single_config(mini_path)
+
+    def test_rejects_nondeterministic_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            mini_path = tmp_path / "mini.yaml"
+            text = MINI.read_text(encoding="utf-8").replace("  do_sample: false\n", "  do_sample: true\n", 1)
+            mini_path.write_text(text, encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "evaluation.do_sample"):
                 load_single_config(mini_path)

@@ -18,12 +18,10 @@ DPO_FILE_KEYS = {"train": "dpo_train", "validation": "dpo_validation"}
 
 @dataclass(frozen=True)
 class DPOCandidatePools:
-    """Initial Mini and expanded formal DPO candidate pools."""
+    """DPO candidate pools from the configured Stage 2 run-mode view."""
 
-    train_initial_rows: list[dict[str, Any]]
-    validation_initial_rows: list[dict[str, Any]]
-    train_expanded_rows: list[dict[str, Any]]
-    validation_expanded_rows: list[dict[str, Any]]
+    train_rows: list[dict[str, Any]]
+    validation_rows: list[dict[str, Any]]
     manifest: dict[str, Any]
     candidate_counts: dict[str, dict[str, int]]
 
@@ -38,7 +36,7 @@ class TokenizedDPOData:
 
 
 def load_dpo_candidate_pools(config: Mapping[str, Any]) -> DPOCandidatePools:
-    """Load initial Mini and deterministic expanded formal DPO candidate pools."""
+    """Load DPO candidates from the configured Stage 2 run-mode view only."""
 
     manifest_path = Path(str(config["data"]["stage2_manifest_file"]))
     manifest = load_and_validate_stage2_dpo_manifest(manifest_path)
@@ -46,26 +44,20 @@ def load_dpo_candidate_pools(config: Mapping[str, Any]) -> DPOCandidatePools:
     run_mode = str(config["project"]["run_mode"])
     if run_mode not in views:
         raise ValueError(f"Stage 2 manifest does not contain {run_mode!r} views: {manifest_path}")
-    if "formal" not in views:
-        raise ValueError(f"Stage 2 manifest does not contain formal views: {manifest_path}")
 
-    pools: dict[str, dict[str, list[dict[str, Any]]]] = {"initial": {}, "expanded": {}}
+    pools: dict[str, list[dict[str, Any]]] = {}
     counts: dict[str, dict[str, int]] = {}
     for split in DPO_SPLITS:
         all_rows = _load_and_validate_manifest_file(manifest, split)
-        initial_ids = list(views[run_mode]["dpo"][split])
-        expanded_ids = list(views["formal"]["dpo"][split])
-        pools["initial"][split] = _select_manifest_rows(all_rows, initial_ids, split)
-        pools["expanded"][split] = _select_manifest_rows(all_rows, expanded_ids, split)
+        ids = list(views[run_mode]["dpo"][split])
+        pools[split] = _select_manifest_rows(all_rows, ids, split)
+        _assert_rows_use_run_mode_source_ids(pools[split], views[run_mode], split, run_mode)
         counts[split] = {
-            "initial": len(pools["initial"][split]),
-            "expanded": len(pools["expanded"][split]),
+            "run_mode": len(pools[split]),
         }
     return DPOCandidatePools(
-        train_initial_rows=pools["initial"]["train"],
-        validation_initial_rows=pools["initial"]["validation"],
-        train_expanded_rows=pools["expanded"]["train"],
-        validation_expanded_rows=pools["expanded"]["validation"],
+        train_rows=pools["train"],
+        validation_rows=pools["validation"],
         manifest=manifest,
         candidate_counts=counts,
     )
@@ -111,8 +103,7 @@ def select_tokenized_dpo_data(
     """Filter candidate pools by true token length and select exact target counts."""
 
     train_rows, train_stats = _filter_rank_and_select_split(
-        initial_rows=candidate_pools.train_initial_rows,
-        expanded_rows=candidate_pools.train_expanded_rows,
+        rows=candidate_pools.train_rows,
         tokenizer=tokenizer,
         max_length=max_length,
         max_prompt_length=max_prompt_length,
@@ -121,8 +112,7 @@ def select_tokenized_dpo_data(
         target_count=target_train_count,
     )
     validation_rows, validation_stats = _filter_rank_and_select_split(
-        initial_rows=candidate_pools.validation_initial_rows,
-        expanded_rows=candidate_pools.validation_expanded_rows,
+        rows=candidate_pools.validation_rows,
         tokenizer=tokenizer,
         max_length=max_length,
         max_prompt_length=max_prompt_length,
@@ -271,9 +261,25 @@ def _select_manifest_rows(rows: Sequence[dict[str, Any]], ids: Sequence[str], sp
     return [rows_by_id[row_id] for row_id in ids]
 
 
+def _assert_rows_use_run_mode_source_ids(rows: Sequence[Mapping[str, Any]], view: Mapping[str, Any], split: str, run_mode: str) -> None:
+    source_view = view.get("dpo_source_ids", {})
+    source_ids = set(source_view.get(split, [])) if isinstance(source_view, Mapping) else set()
+    if not source_ids:
+        raise ValueError(f"Stage 2 manifest is missing {run_mode} dpo_source_ids.{split}")
+    outside = sorted({_row_source_view_id(row) for row in rows if _row_source_view_id(row) not in source_ids})
+    if outside:
+        raise ValueError(f"{run_mode} {split} DPO rows include source IDs outside the {run_mode} source view: {outside[:3]}")
+
+
+def _row_source_view_id(row: Mapping[str, Any]) -> str:
+    metadata = row.get("metadata", {})
+    if isinstance(metadata, Mapping) and metadata.get("normalized_id"):
+        return str(metadata["normalized_id"])
+    return str(row["source_id"])
+
+
 def _filter_rank_and_select_split(
-    initial_rows: Sequence[Mapping[str, Any]],
-    expanded_rows: Sequence[Mapping[str, Any]],
+    rows: Sequence[Mapping[str, Any]],
     tokenizer: Any,
     max_length: int,
     max_prompt_length: int,
@@ -281,19 +287,13 @@ def _filter_rank_and_select_split(
     split: str,
     target_count: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    initial_kept, initial_stats = _convert_and_filter_split(initial_rows, tokenizer, max_length, max_prompt_length)
-    selected_pool_name = "initial"
-    pool_rows = list(initial_rows)
-    eligible_rows = initial_kept
-    pool_stats = initial_stats
-    if len(initial_kept) < target_count:
-        selected_pool_name = "expanded"
-        pool_rows = list(expanded_rows)
-        eligible_rows, pool_stats = _convert_and_filter_split(expanded_rows, tokenizer, max_length, max_prompt_length)
+    eligible_rows, pool_stats = _convert_and_filter_split(rows, tokenizer, max_length, max_prompt_length)
     if len(eligible_rows) < target_count:
         raise ValueError(
-            f"Not enough {split} DPO rows after token filtering at max_length={max_length}, "
-            f"max_prompt_length={max_prompt_length}: needed {target_count}, got {len(eligible_rows)}"
+            f"Not enough Mini {split} DPO rows in Stage 2 {split} view after token filtering at "
+            f"max_length={max_length}, max_prompt_length={max_prompt_length}: "
+            f"needed {target_count}, got {len(eligible_rows)}. "
+            "Stage 4 Mini DPO must not borrow rows from the formal pool."
         )
     ranked = sorted(eligible_rows, key=lambda row: (_stable_rank(seed, split, str(row["id"])), str(row["id"])))
     selected = ranked[:target_count]
@@ -303,12 +303,8 @@ def _filter_rank_and_select_split(
         {
             "target_count": int(target_count),
             "final_count": len(selected),
-            "selected_pool": selected_pool_name,
-            "initial_candidate_count": len(initial_rows),
-            "initial_kept_count": len(initial_kept),
-            "expanded_candidate_count": len(expanded_rows),
-            "expanded_used": selected_pool_name == "expanded",
-            "candidate_count": len(pool_rows),
+            "selected_pool": "run_mode",
+            "candidate_count": len(rows),
             "length_filtered_count": int(stats["filtered_count"]),
             "selection_hash": selection_hash(selected),
             "selected_ids": [str(row["id"]) for row in selected],

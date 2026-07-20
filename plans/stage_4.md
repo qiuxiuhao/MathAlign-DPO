@@ -15,13 +15,15 @@ generation sanity checks, and records truthful run metadata.
 - Validate `stage2_manifest.json`, Stage 1 reference hash, DPO JSONL hashes,
   row counts, Mini/formal DPO views, schema, unique IDs, source IDs, and
   `token_count: null`.
-- Load the configured Qwen tokenizer and require its built-in chat template.
+- Load the tokenizer saved by the Stage 3 SFT run and require its built-in chat
+  template.
 - Compute TRL-compatible conversational token lengths for prompt, chosen, and
   rejected.
 - Enforce `dpo.max_prompt_length` before creating `DPOTrainer`; do not rely on
   TRL truncation.
-- Select 256 legal Mini DPO train rows and 32 validation rows by deterministic
-  expansion from the Stage 2 formal DPO pool when the Mini pool is too short.
+- Select legal Mini DPO train and validation rows only from the Stage 2 Mini DPO view.
+  The current Mini config uses 179 train rows and 21 validation rows because the
+  true tokenizer keeps only those Mini rows under the 512/384 limits.
 - Initialize policy from a completed non-smoke Stage 3 Mini SFT adapter.
 - Use official TRL `DPOTrainer` with a PEFT model, `ref_model=None`, and no
   custom DPO trainer.
@@ -47,6 +49,7 @@ Add:
 - `plans/stage_4.md`
 - `scripts/train_dpo.py`
 - `src/mathalign_dpo/training/dpo_data.py`
+- `src/mathalign_dpo/training/run_artifacts.py`
 - `src/mathalign_dpo/training/train_dpo.py`
 - `tests/test_dpo_data.py`
 - `tests/test_train_dpo_cli.py`
@@ -58,6 +61,7 @@ Modify:
 - `src/mathalign_dpo/training/model_loader.py`
 - `src/mathalign_dpo/training/runtime_metadata.py`
 - `src/mathalign_dpo/training/train_sft.py`
+- `requirements.txt`
 - `README.md`
 - `docs/design.md`
 - `docs/data_contract.md`
@@ -74,7 +78,7 @@ Modify:
 4. Load `dpo_train.jsonl` and `dpo_validation.jsonl`, verify manifest row
    counts and sha256, and validate every row against the Stage 2 DPO schema.
 5. Select initial candidates from `views[run_mode]["dpo"]`.
-6. Tokenize initial candidates with the configured tokenizer:
+6. Tokenize initial candidates with the Stage 3 saved tokenizer:
    - `prompt_ids = tokenizer.apply_chat_template(prompt, add_generation_prompt=True)`
    - `chosen_total = tokenizer.apply_chat_template(prompt + chosen)`
    - `rejected_total = tokenizer.apply_chat_template(prompt + rejected)`
@@ -83,8 +87,8 @@ Modify:
    - `chosen_total <= dpo.max_length`
    - `rejected_total <= dpo.max_length`
    - positive chosen and rejected completion lengths
-8. If the initial pool is too short, repeat filtering against
-   `views["formal"]["dpo"]`.
+8. If the Mini pool is too short for `dpo.train_samples` or
+   `dpo.validation_samples`, fail clearly; do not borrow from the formal pool.
 9. Stable-rank kept rows by `seed|dpo|split|row_id` and select the exact target
    count.
 10. Write token statistics and selected IDs only in run metadata; no new
@@ -93,12 +97,10 @@ Modify:
 Tokenizer probe before implementation found:
 
 - Mini train: 179 legal rows from 256.
-- Formal train: 3338 legal rows from 5000.
 - Mini validation: 21 legal rows from 32.
-- Formal validation: 127 legal rows from 200.
 
-Therefore Stage 4 must use deterministic formal-pool expansion for both train
-and validation at the Mini limits.
+Therefore the Mini config uses `dpo.train_samples = 179` and
+`dpo.validation_samples = 21` for normal Stage 4 DPO.
 
 ## Policy And Reference Design
 
@@ -131,7 +133,8 @@ For MPS:
 - Rely on TRL 0.29.1 PEFT reference behavior instead of loading a second full
   reference model.
 - After trainer initialization, assert trainable parameters are on MPS and that
-  reference adapter parameters are not trainable.
+  both `default` and `ref` adapters exist, `default` is trainable, `ref` is
+  frozen, and their initial weights match.
 
 ## MPS Memory Strategy
 
@@ -177,7 +180,8 @@ fails.
 - DPO data tests cover manifest completion, Stage 1 hash, DPO JSONL hashes,
   duplicate IDs, missing view IDs, malformed roles, identical chosen/rejected,
   rejected prompt leaks, non-null `token_count`, boundary token lengths, no
-  truncation, and deterministic formal-pool expansion.
+  truncation, Mini-only source boundaries, and failure when Mini targets cannot
+  be met.
 - Config tests cover positive DPO beta, supported loss type, positive DPO
   lengths, `max_prompt_length < max_length`, MPS `adamw_torch`, and CUDA NF4
   compatibility.
@@ -194,7 +198,8 @@ fails.
 - Real Qwen chat-template token lengths are computed for prompt, chosen, and
   rejected.
 - Over-length rows are filtered and counted, not truncated.
-- Normal Mini DPO uses exactly 256 train rows and 32 validation rows.
+- Normal Mini DPO uses exactly `dpo.train_samples` train rows and
+  `dpo.validation_samples` validation rows from the Mini DPO view.
 - Smoke DPO uses `smoke_test.dpo_samples` train rows.
 - Policy initializes from a validated Stage 3 SFT adapter.
 - TRL `DPOTrainer` is configured without `max_prompt_length`, `peft_config`, or

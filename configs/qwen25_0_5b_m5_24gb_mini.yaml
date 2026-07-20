@@ -125,6 +125,8 @@ sft:
 dpo:
   enabled: true
   output_dir: outputs/checkpoints/mini/dpo
+  train_samples: 179
+  validation_samples: 21
   beta: 0.1
   loss_type: sigmoid
   learning_rate: 0.000005
@@ -140,7 +142,7 @@ dpo:
   max_grad_norm: 1.0
   optimizer: adamw_torch
   lr_scheduler_type: cosine
-  eval_strategy: steps
+  eval_strategy: "no"
   eval_steps: 10
   save_strategy: steps
   save_steps: 10

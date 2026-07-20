@@ -128,6 +128,8 @@ sft:
 dpo:
   enabled: true
   output_dir: outputs/checkpoints/formal/dpo
+  train_samples: 5000
+  validation_samples: 200
   beta: 0.1
   loss_type: sigmoid
   learning_rate: 0.000005

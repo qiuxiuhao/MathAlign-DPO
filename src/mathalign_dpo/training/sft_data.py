@@ -229,8 +229,13 @@ def validate_tokenizer_chat_template(tokenizer: Any) -> dict[str, Any]:
         pad_token_set_from_eos = True
     return {
         "chat_template_present": True,
+        "chat_template_sha256": hashlib.sha256(str(getattr(tokenizer, "chat_template", "")).encode("utf-8")).hexdigest(),
+        "vocab_size": int(len(tokenizer)) if hasattr(tokenizer, "__len__") else getattr(tokenizer, "vocab_size", None),
         "pad_token_before": pad_token_before,
         "pad_token_after": getattr(tokenizer, "pad_token", None),
+        "pad_token_id": getattr(tokenizer, "pad_token_id", None),
+        "eos_token": getattr(tokenizer, "eos_token", None),
+        "eos_token_id": getattr(tokenizer, "eos_token_id", None),
         "pad_token_set_from_eos": pad_token_set_from_eos,
     }
 

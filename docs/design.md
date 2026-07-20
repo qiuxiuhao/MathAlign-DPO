@@ -431,10 +431,44 @@ Stage 4 的 TRL 版本为 `0.29.1`。该版本的 `DPOConfig` 不提供
 `DPOConfig.max_length` 仍传入 TRL，并在 Trainer 初始化后再次断言 tokenized
 dataset 没有超过该长度。
 
-Mini DPO 正常运行要求选择 256 条 train 和 32 条 validation 偏好对。若 Stage
-2 Mini DPO view 在 `max_length = 512`、`max_prompt_length = 384` 下不足目标
-数量，允许从 Stage 2 formal DPO view 按确定性候选池扩展并稳定 rank 选择；
-禁止随机补样本，禁止截断 prompt 或 chosen/rejected。
+在 Mac MPS Mini DPO 中，训练中间评估关闭为 `dpo.eval_strategy = "no"`，
+只在训练完成后显式调用 `trainer.evaluate()`。这是为了避免 TRL DPO 在训练中
+反复执行 validation reference 前向导致 Metal command queue 不稳定。Stage 4
+仍会在训练前校验 validation 数据长度，并在训练后保存 eval metrics。
+
+MPS Mini DPO 还会在修正并冻结 `ref` adapter 后，使用 TRL 0.29.1 的
+`_precompute_ref_logps` 预计算 train/eval reference log-prob；训练循环中只
+更新 policy/default adapter。预计算结果必须有限且不能全为 0。DPO
+`logging_nan_inf_filter` 明确关闭，避免 NaN/Inf loss 被 Transformers 日志
+过滤成看似正常的 0。
+
+MPS Mini DPO 不使用 Transformers/Accelerate 默认的全模型
+`clip_grad_norm_` 路径；该路径在本机 MPS DPO smoke 中会把多数
+`grad_norm` 记录为 NaN。Stage 4 在传给 Trainer 时将 `max_grad_norm` 置为
+0，并用一个局部 callback 只遍历可训练 LoRA 参数，在 CPU copy 上计算梯度范数，
+再按配置的 `dpo.max_grad_norm` 缩放原始梯度。若 LoRA 梯度本身非有限，运行
+仍必须失败。
+
+Mini DPO 正常运行只允许选择 Stage 2 Mini DPO view 中的偏好对，并且每条
+偏好对必须来自 Stage 1/2 定义的 Mini source ID。当前 Mini 配置使用
+`dpo.train_samples = 179`、`dpo.validation_samples = 21`，这是 512/384 长度
+限制下真实 Qwen tokenizer 保留下来的 Mini-only 合法数量。若合法样本不足
+配置目标，训练必须失败，或先回到 Stage 2 调整 Mini 候选池设计；禁止从
+Stage 2 formal DPO view 补样，禁止随机补样本，禁止截断 prompt 或
+chosen/rejected。
+
+Stage 4 运行还必须：
+
+- 从 Stage 3 SFT run 的 `tokenizer/` 直接加载 tokenizer，并校验 vocab size、
+  pad/eos token 和 chat template hash；
+- 从 `final_adapter/adapter_config.json` 读取并校验实际 LoRA rank、alpha、
+  dropout、bias、target modules 和 base model revision；
+- 校验 TRL/PEFT 创建的 `default` 与 `ref` adapter 都存在，`default` 可训练、
+  `ref` 冻结，且初始化权重一致；
+- 检查 train/eval loss、reward、margin、log-prob 和 grad norm，发现 NaN/Inf
+  必须让运行失败，不发布 completed 目录；
+- 固定并校验 `torch==2.13.0`、`transformers==4.57.6`、`trl==0.29.1`、
+  `peft==0.17.1`、`accelerate==1.14.0`。
 
 Stage 4 训练输出目录为：
 
@@ -454,12 +488,23 @@ src/mathalign_dpo/evaluation/evaluate_math.py
 
 职责：
 
-- 加载 Base/SFT/DPO；
-- 使用相同 Prompt；
-- 使用相同生成参数；
-- 提取答案；
-- exact match；
-- 保存逐样本和汇总结果。
+- 从 Stage 2 `views.mini.step.evaluation` 和 `step_eval.jsonl` 选择固定
+  Mini evaluation 样本；
+- 使用 Stage 3 保存的 tokenizer；
+- 串行加载并释放 Base、SFT、DPO 三组模型，避免 MPS 内存叠加；
+- SFT 使用 Base + Stage 3 `final_adapter`；
+- DPO 使用 Base + Stage 4 DPO `final_adapter`，该 adapter 已从 SFT 初始化后
+  继续训练，不再额外叠加 SFT adapter；
+- 三组模型使用相同 Prompt 和 deterministic generation 参数；
+- 提取并规范化最终答案，计算 exact match、答案提取率、生成长度和耗时；
+- 在 Stage 4 DPO validation preference rows 上计算 chosen/rejected log-prob
+  preference accuracy，作为诊断指标；
+- 保存逐样本预测、错误案例、对比样例、summary、Markdown report 和
+  `run_metadata.json`。
+
+Stage 5 必须拒绝 superseded formal-pool Stage 4 DPO run；Mini-only DPO run
+必须满足 `dataset_counts.final_actual == dpo.train_samples/dpo.validation_samples`、
+`selected_pool=run_mode` 和 `numerical_stability.passed=true`。
 
 ---
 
