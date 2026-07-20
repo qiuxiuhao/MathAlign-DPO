@@ -198,11 +198,17 @@ def build_final_datasets(
     }
     prepared = prepare_formal_examples(raw_rows, configs, formal, tokenizers.formal, counters)
     targets = target_counts(formal)
-    train_count = min(int(targets["sft"]["train"]), len(prepared))
+    split_counts = allocate_formal_split_counts(
+        available=len(prepared),
+        train_target=int(targets["sft"]["train"]),
+        validation_target=int(targets["sft"]["validation"]),
+        evaluation_target=int(targets["evaluation"]),
+    )
+    train_count = split_counts["train"]
     validation_start = train_count
-    validation_count = min(int(targets["sft"]["validation"]), max(0, len(prepared) - validation_start))
+    validation_count = split_counts["validation"]
     evaluation_start = validation_start + validation_count
-    evaluation_count = min(int(targets["evaluation"]), max(0, len(prepared) - evaluation_start))
+    evaluation_count = split_counts["evaluation"]
     reserve_start = evaluation_start + evaluation_count
     formal_examples = {
         "train": prepared[:train_count],
@@ -729,6 +735,22 @@ def target_counts(config: Mapping[str, Any]) -> dict[str, Any]:
         "dpo": {"train": int(config["dpo"]["train_samples"]), "validation": int(config["dpo"]["validation_samples"])},
         "evaluation": int(config["evaluation"]["samples"]),
     }
+
+
+def allocate_formal_split_counts(
+    available: int,
+    train_target: int,
+    validation_target: int,
+    evaluation_target: int,
+) -> dict[str, int]:
+    """Preserve held-out splits when filtering leaves fewer rows than requested."""
+
+    evaluation = min(evaluation_target, available)
+    remaining = available - evaluation
+    validation = min(validation_target, remaining)
+    remaining -= validation
+    train = min(train_target, remaining)
+    return {"train": train, "validation": validation, "evaluation": evaluation}
 
 
 def _config_with_smoke_counts(config: Mapping[str, Any]) -> dict[str, Any]:
