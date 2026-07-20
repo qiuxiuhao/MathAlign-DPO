@@ -78,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mini-output-dir", default=DEFAULT_MINI_DPO_DIR)
     parser.add_argument("--candidates-per-prompt", type=int, default=4)
     parser.add_argument("--generation-batch-size", type=int, default=4)
-    parser.add_argument("--max-new-tokens", type=int, default=None)
+    parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--seed", type=int, default=None)
@@ -121,7 +121,7 @@ def build_dpo_v2(
     formal_config = load_config(formal_config_path)
     mini_config = load_config(mini_config_path)
     seed = int(seed if seed is not None else formal_config["project"]["seed"])
-    max_new_tokens = int(max_new_tokens if max_new_tokens is not None else formal_config["evaluation"]["max_new_tokens"])
+    max_new_tokens = int(max_new_tokens)
 
     sft_root = Path(sft_dir)
     adapter_dir = sft_root / "best_adapter"
@@ -259,7 +259,9 @@ def generate_candidates_for_split(
     if device.startswith("cuda") and torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
     try:
-        for start in range(0, len(rows), generation_batch_size):
+        starts = range(0, len(rows), generation_batch_size)
+        progress = _progress(starts, description=f"Generating {split} SFT candidates", total=len(starts))
+        for start in progress:
             batch = list(rows[start : start + generation_batch_size])
             prompts = [
                 tokenizer.apply_chat_template(list(row["prompt"]), tokenize=False, add_generation_prompt=True)
@@ -366,7 +368,8 @@ def select_pairs(
     chosen_lengths: list[int] = []
     rejected_lengths: list[int] = []
     seen_sources: set[str] = set()
-    for row in source_rows:
+    progress = _progress(source_rows, description=f"Selecting {split} DPO pairs", total=len(source_rows))
+    for row in progress:
         source_id = str(row["source_id"])
         if source_id in seen_sources:
             rejection_reasons["duplicate_source_row"] += 1
@@ -452,7 +455,8 @@ def build_mini_pairs(
     for split, rows in formal_pair_splits.items():
         selected: list[dict[str, Any]] = []
         counters = Counter()
-        for row in rows:
+        progress = _progress(rows, description=f"Filtering mini {split} DPO pairs", total=len(rows))
+        for row in progress:
             if str(row["source_id"]) not in mini_source_ids[split]:
                 continue
             copied = deepcopy(dict(row))
@@ -660,6 +664,14 @@ def _total_report(split_reports: Mapping[str, Mapping[str, Any]], mini_reports: 
 
 def _average(values: Sequence[int]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def _progress(rows: Any, description: str, total: int) -> Any:
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        return rows
+    return tqdm(rows, total=total, desc=description, dynamic_ncols=True)
 
 
 if __name__ == "__main__":
