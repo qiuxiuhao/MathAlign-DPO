@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from decimal import Decimal, InvalidOperation
@@ -205,15 +206,27 @@ def release_accelerator_memory() -> None:
 
 def write_json(path: Path, payload: Mapping[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True)
+        json.dump(json_safe(payload), handle, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True)
         handle.write("\n")
 
 
 def write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, allow_nan=False, sort_keys=True))
+            handle.write(json.dumps(json_safe(row), ensure_ascii=False, allow_nan=False, sort_keys=True))
             handle.write("\n")
+
+
+def json_safe(value: Any) -> Any:
+    """Convert non-finite floats to JSON-compliant null values."""
+
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    return value
 
 
 def _extract_final_line_answer(text: str) -> str | None:

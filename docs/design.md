@@ -1,68 +1,78 @@
-# MathAlign-DPO Design
+# MathAlign-DPO 设计说明
 
-## Current Stage
+## 当前架构
 
-Current stage: Stage 1 data preprocessing refactor.
-
-This stage intentionally rebuilds only the data preprocessing path. SFT, DPO,
-and evaluation code remains unchanged and will be migrated in later stages.
-
-## Stage 1 Responsibility
-
-Stage 1 now owns all dataset construction work:
-
-- Download `AI-MO/NuminaMath-CoT` once and save it to `data/raw/numina_math/`.
-- Reuse the local raw Dataset with `datasets.load_from_disk()` by default.
-- Clean and standardize raw fields.
-- Assign deterministic train / validation / evaluation splits.
-- Parse reasoning steps.
-- Extract final answers.
-- Build final SFT, DPO, and evaluation datasets.
-- Apply real tokenizer length filtering for both Mini and formal modes.
-- Save final Hugging Face Dataset directories under `data/processed/`.
-
-## Removed Data Architecture
-
-The previous Stage 1/2 split is removed from the active design. The project no
-longer designs or publishes:
-
-- normalized JSONL files;
-- step JSONL files;
-- SFT/DPO JSONL files;
-- split manifests;
-- Stage 2 manifests;
-- file-level hash lineage gates;
-- candidate pools;
-- expanded pools;
-- training-time token filtering;
-- Mini replenishment from formal pools;
-- delayed `token_count = null` rows.
-
-## Determinism
-
-Splits are assigned with a SHA-256 bucket using:
+当前项目采用小型顶层链路：
 
 ```text
-dataset_name | dataset_revision | source_split | source_id | seed
+scripts/prepare_data.py  -> Stage 1 数据预处理
+sft/                     -> Stage 2 SFT 训练与 Base/SFT 评价
+dpo/                     -> Stage 3 DPO 训练与 Base/SFT/DPO 评价
+configs/                 -> YAML 配置加载
 ```
 
-Rows within each split are ordered by a second SHA-256 rank. Formal datasets are
-selected first. Mini datasets are deterministic prefix subsets of formal datasets
-after Mini tokenizer constraints are applied.
+旧 `src/` 包已经删除。新代码不应 import `mathalign_dpo.*`。
 
-## Runtime Boundaries
+## 数据流
 
-This refactor accepts a temporary boundary:
+Stage 1 负责全部数据构造：
 
-- `src/mathalign_dpo/data/` is deleted.
-- Existing Stage 3-5 code still imports old data helpers.
-- Stage 3-5 execution is therefore not part of this stage's acceptance criteria.
+- 下载或复用 `AI-MO/NuminaMath-CoT`；
+- 清洗并标准化字段；
+- 分配确定性的 train / validation / evaluation split；
+- 解析推理步骤和最终答案；
+- 构造 SFT、DPO、Evaluation Hugging Face Dataset；
+- 分别使用 Mini 和 formal tokenizer 完成真实长度过滤；
+- 将最终数据保存到 `data/processed/`。
 
-The next implementation stage should update training and evaluation loaders to
-read from:
+Stage 2 和 Stage 3 只通过 `datasets.load_from_disk()` 加载本地数据。它们不再清洗、过滤、重排、补齐或重新构造样本。
 
-```text
-data/processed/<mini|formal>/<sft|dpo|evaluation>
-```
+## 训练流
 
-with `datasets.load_from_disk()`.
+SFT：
+
+- 读取 `data/processed/<mode>/sft`；
+- 从本地 `model/` 目录加载配置指定的 Qwen 模型，缺失时从 ModelScope 下载；
+- 使用 TRL `SFTTrainer` 训练 LoRA/QLoRA adapter；
+- 保存 `adapter/`、`tokenizer/`、metrics、reload 样本和 Base/SFT 评价结果。
+
+DPO：
+
+- 读取 `data/processed/<mode>/dpo`；
+- 从 Base + 已完成的 SFT adapter 初始化 policy；
+- 使用 TRL `DPOTrainer`，并设置 `ref_model=None`，由 TRL 创建 PEFT reference adapter；
+- 保存 DPO adapter、tokenizer、metrics、reload 样本和 Base/SFT/DPO 评价结果。
+
+## 运行模式
+
+Mini 模式：
+
+- 后端：MPS；
+- 模型：`model/Qwen2.5-0.5B-Instruct`；
+- 精度：FP16；
+- 训练方式：LoRA；
+- 数据：`data/processed/mini/*`。
+
+Formal 模式：
+
+- 后端：CUDA；
+- 模型：`model/Qwen2.5-3B-Instruct`；
+- 精度：BF16；
+- 量化：4-bit NF4；
+- 训练方式：QLoRA；
+- 数据：`data/processed/formal/*`。
+
+两种模式共用同一套 SFT 和 DPO 代码路径。设备差异应只来自 YAML 配置。
+
+## 已删除设计
+
+当前设计不再使用：
+
+- Stage 1/2 多层 manifest 链；
+- 文件级 lineage hash 门禁；
+- JSONL 训练输入；
+- candidate pool 或 expanded pool；
+- 训练阶段数据过滤；
+- Mini 从 formal 池补齐；
+- 自定义 Trainer；
+- Reward Model、PPO 或 GRPO。

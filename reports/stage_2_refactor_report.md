@@ -1,6 +1,6 @@
-# Stage 2 Refactor Report
+# Stage 2 重构报告
 
-## Implemented
+## 已完成
 
 本阶段已完成新的 Stage 2 SFT 链路重构，并完成 Mini 正式 SFT 运行验证。
 
@@ -21,7 +21,7 @@ Stage 2 已删除旧 SFT 入口中的数据预处理、样本筛选、旧 JSONL/
 
 本阶段没有运行或修改 DPO。
 
-## Files Added
+## 新增文件
 
 - `configs/__init__.py`
 - `configs/load_config.py`
@@ -32,7 +32,7 @@ Stage 2 已删除旧 SFT 入口中的数据预处理、样本筛选、旧 JSONL/
 - `sft/train.py`
 - `reports/stage_2_refactor_report.md`
 
-## Files Modified
+## 修改文件
 
 - `configs/qwen25_0_5b_m5_24gb_mini.yaml`
 - `configs/qwen25_3b_4090.yaml`
@@ -45,7 +45,7 @@ Stage 2 已删除旧 SFT 入口中的数据预处理、样本筛选、旧 JSONL/
 - `docs/design.md`
 - `docs/data_contract.md`
 
-## Files Deleted
+## 删除文件
 
 旧 SFT 训练入口已删除：
 
@@ -72,7 +72,7 @@ Stage 1 阶段已删除的旧数据处理包继续保持删除状态：
 - `src/mathalign_dpo/data/`
 - `scripts/build_stage2_data.py`
 
-## Commands Executed
+## 执行命令
 
 用户执行的 Stage 2 smoke：
 
@@ -115,7 +115,7 @@ python -m py_compile sft/modeling.py sft/evaluate.py sft/train.py
 conda run -n mathalign-dpo python -m sft.train --help
 ```
 
-## Test Results
+## 测试结果
 
 基础静态检查：
 
@@ -246,7 +246,7 @@ outputs/mini/sft/
 - `outputs/mini/sft/tokenizer`：15 MB。
 - `model/Qwen2.5-0.5B-Instruct`：956 MB。
 
-## Known Limitations
+## 已知限制
 
 - 本阶段只完成 Mini SFT，不处理 DPO。
 - 当前 Exact Match 来自 32 条 Mini evaluation，只能说明链路可运行和小样本上有观测改善，
@@ -257,7 +257,7 @@ outputs/mini/sft/
 - 旧 DPO 代码仍未迁移，且会受旧配置/旧 SFT/旧数据模块删除影响，后续 Stage 3 需要处理。
 - 当前未记录峰值 MPS 内存、macOS 版本、PyTorch/Transformers/TRL/PEFT 版本等完整实验环境信息。
 
-## Deviations From Plan
+## 计划偏离
 
 - `plans/stage_2_sft.md` 当前未在仓库中找到。本报告按已实现的新 Stage 2 SFT 行为与正式运行结果记录。
 - 为满足用户“旧 SFT 相关代码全部删除，新的 SFT 代码放在仓库根目录 `sft/`”的要求，
@@ -271,7 +271,7 @@ outputs/mini/sft/
 - 用户确认后，为减少日志噪声，已将模型加载参数从 deprecated `torch_dtype` 改为 `dtype`，
   并在推理加载后清理 sampling generation defaults。
 
-## Recommended Next Stage
+## 建议下一阶段
 
 建议下一阶段进入 DPO 重构：
 

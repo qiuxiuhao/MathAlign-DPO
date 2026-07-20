@@ -1,6 +1,6 @@
-# Stage 1 Refactor Report
+# Stage 1 重构报告
 
-## Implemented
+## 已完成
 
 本阶段已完成 Stage 1 数据链路重构。新的 Stage 1 只负责数据预处理，不执行
 SFT、DPO 或 Evaluation 训练/评测。
@@ -34,12 +34,12 @@ data/processed/
     └── evaluation/
 ```
 
-## Files Added
+## 新增文件
 
 - `plans/refactor_stage1_data.md`
 - `reports/stage_1_refactor_report.md`
 
-## Files Modified
+## 修改文件
 
 - `scripts/prepare_data.py`
 - `README.md`
@@ -48,13 +48,13 @@ data/processed/
 - `configs/qwen25_0_5b_m5_24gb_mini.yaml`
 - `configs/qwen25_3b_4090.yaml`
 
-## Files Deleted
+## 删除文件
 
 - `scripts/build_stage2_data.py`
 - `src/mathalign_dpo/data/`
 - `data/processed/` 下旧 JSONL、manifest、statistics、manual review 等旧产物
 
-## Commands Executed
+## 执行命令
 
 清理旧数据链路：
 
@@ -102,7 +102,7 @@ conda run -n mathalign-dpo python -c "... load_from_disk validation ..."
 conda run -n mathalign-dpo python -c "... schema and column validation ..."
 ```
 
-## Test Results
+## 测试结果
 
 基础检查：
 
@@ -199,7 +199,7 @@ Schema 检查：
 }
 ```
 
-## Known Limitations
+## 已知限制
 
 - Stage 3-5 训练和评测入口本阶段未迁移。
 - 由于 `src/mathalign_dpo/data/` 已删除，当前旧的 SFT/DPO/Evaluation 代码仍会因
@@ -208,14 +208,14 @@ Schema 检查：
 - 当前 `scripts/prepare_data.py` 为了遵守“只修改一个 Python 文件”的约束，承担了较多
   Stage 1 逻辑；后续可在训练/评测迁移完成后再按职责拆分。
 
-## Deviations From Plan
+## 计划偏离
 
 - 无重大偏离。
 - 按计划接受 Stage 3-5 旧入口暂时不可运行这一迁移边界。
 - 为保证 `python scripts/prepare_data.py --help` 在裸 Python 环境也可运行，将
   `PyYAML` import 延迟到读取配置时执行。
 
-## Recommended Next Stage
+## 建议下一阶段
 
 建议下一阶段迁移训练与评测加载逻辑：
 

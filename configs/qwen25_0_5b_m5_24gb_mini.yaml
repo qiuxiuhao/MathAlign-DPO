@@ -113,7 +113,7 @@ sft:
 
 dpo:
   enabled: true
-  output_dir: outputs/checkpoints/mini/dpo
+  output_dir: outputs/mini/dpo
   train_samples: 179
   validation_samples: 21
   beta: 0.1

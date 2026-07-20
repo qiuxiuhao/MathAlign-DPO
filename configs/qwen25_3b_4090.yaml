@@ -9,7 +9,10 @@ project:
     Qwen2.5-3B, NF4 QLoRA SFT and step-level DPO.
 
 model:
-  name_or_path: Qwen/Qwen2.5-3B-Instruct
+  name_or_path: model/Qwen2.5-3B-Instruct
+  modelscope_name_or_path: Qwen/Qwen2.5-3B-Instruct
+  modelscope_revision: master
+  remote_name_or_path: Qwen/Qwen2.5-3B-Instruct
   revision: aa8e72537993ba99e69dfaafa59ed015b17504d1
   trust_remote_code: false
   torch_dtype: bfloat16
@@ -89,7 +92,7 @@ negative_sampling:
 
 sft:
   enabled: true
-  output_dir: outputs/checkpoints/formal/sft
+  output_dir: outputs/formal/sft
   learning_rate: 0.0002
   num_train_epochs: 1
   max_steps: 300
@@ -113,7 +116,7 @@ sft:
 
 dpo:
   enabled: true
-  output_dir: outputs/checkpoints/formal/dpo
+  output_dir: outputs/formal/dpo
   train_samples: 5000
   validation_samples: 200
   beta: 0.1
