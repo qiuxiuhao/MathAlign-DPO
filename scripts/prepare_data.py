@@ -16,7 +16,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 
 SCHEMA_VERSION = "2.0"
@@ -241,7 +241,7 @@ def prepare_formal_examples(
     counters: Mapping[str, Counter[str]],
 ) -> list[PreparedExample]:
     by_prompt: dict[str, list[tuple[str, int, Mapping[str, Any], dict[str, str]]]] = {}
-    for raw_index, row in enumerate(raw_rows):
+    for raw_index, row in enumerate(progress(raw_rows, "normalize/filter raw rows", total=len(raw_rows))):
         fields, reason = normalize_raw_fields(row, formal["preprocessing"])
         if reason is not None:
             counters["field_filter"][reason] += 1
@@ -254,14 +254,19 @@ def prepare_formal_examples(
         by_prompt.setdefault(normalized_prompt, []).append((sort_key, raw_index, row, fields))
 
     representatives: list[tuple[str, int, Mapping[str, Any], dict[str, str], str]] = []
-    for normalized_prompt, candidates in by_prompt.items():
+    for normalized_prompt, candidates in progress(by_prompt.items(), "dedupe prompts", total=len(by_prompt), unit="prompt"):
         candidates.sort(key=lambda item: item[0])
         counters["dedupe"]["duplicate_prompt_rows"] += max(0, len(candidates) - 1)
         sort_key, raw_index, row, fields = candidates[0]
         representatives.append((sort_key, raw_index, row, fields, normalized_prompt))
 
     prepared: list[PreparedExample] = []
-    for _sort_key, raw_index, row, fields, normalized_prompt in representatives:
+    for _sort_key, raw_index, row, fields, normalized_prompt in progress(
+        representatives,
+        "token length filtering",
+        total=len(representatives),
+        unit="prompt",
+    ):
         source_id = hash_text(normalized_prompt)
         model_input = f"{fields['prompt']}\n\n{MODEL_INPUT_SUFFIX}"
         full_positive = join_reasoning(fields["initial_reason_steps"], fields["full_chosen"])
@@ -359,7 +364,12 @@ def build_mini_rows(
         "evaluation": list(formal_examples["evaluation"][: min(int(targets["evaluation"]), len(formal_examples["evaluation"]))]),
     }
     for split in ("train", "validation"):
-        for example in mini_examples[split]:
+        for example in progress(
+            mini_examples[split],
+            f"mini {split} prefix length check",
+            total=len(mini_examples[split]),
+            unit="row",
+        ):
             sft_count = count_chat_tokens(tokenizer, [*base_messages(example.model_input, mini), assistant_message(example.full_positive)], False)
             if sft_count > int(mini["model"]["max_length"]):
                 counters[f"sft_{split}_prefix_too_long"] += 1
@@ -376,7 +386,12 @@ def build_mini_rows(
             if reason is not None:
                 counters[f"dpo_{split}_{reason}"] += 1
                 raise ValueError(f"Mini {split} prefix row fails DPO length filter {reason}: {example.source_id}")
-    for example in mini_examples["evaluation"]:
+    for example in progress(
+        mini_examples["evaluation"],
+        "mini evaluation prefix length check",
+        total=len(mini_examples["evaluation"]),
+        unit="row",
+    ):
         prompt_tokens = count_chat_tokens(tokenizer, base_messages(example.model_input, mini), add_generation_prompt=True)
         if prompt_tokens > int(mini["model"]["max_length"]):
             counters["evaluation_prompt_too_long"] += 1
@@ -774,7 +789,15 @@ def normalize_text(text: str, preprocessing: Mapping[str, Any]) -> str:
 
 
 def _dataset_rows(raw: Any) -> list[Mapping[str, Any]]:
-    return [raw[index] for index in range(len(raw))]
+    return [raw[index] for index in progress(range(len(raw)), "read raw rows", total=len(raw), unit="row")]
+
+
+def progress(iterable: Iterable[Any], desc: str, total: int | None = None, unit: str = "row") -> Iterable[Any]:
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        return iterable
+    return tqdm(iterable, desc=desc, total=total, unit=unit)
 
 
 def _flatten_ids(ids: Any) -> list[int]:
