@@ -73,7 +73,7 @@ def validate_config(config: Mapping[str, Any], path: Path | None = None) -> None
     evaluation = config["evaluation"]
     if not evaluation.get("output_dir"):
         raise ValueError(f"{label}: evaluation.output_dir is required")
-    for key in ("samples", "max_new_tokens", "num_beams"):
+    for key in ("samples", "batch_size", "max_new_tokens", "num_beams"):
         if int(evaluation.get(key, 0)) <= 0:
             raise ValueError(f"{label}: evaluation.{key} must be positive")
     if bool(evaluation.get("do_sample", False)):

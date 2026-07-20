@@ -26,6 +26,9 @@ def generate_predictions(
     import torch
 
     output: list[dict[str, Any]] = []
+    batch_size = int(config["evaluation"].get("batch_size", 1))
+    if batch_size <= 0:
+        raise ValueError("evaluation.batch_size must be positive")
     generation_config = {
         "max_new_tokens": int(config["evaluation"]["max_new_tokens"]),
         "do_sample": bool(config["evaluation"].get("do_sample", False)),
@@ -36,43 +39,62 @@ def generate_predictions(
     if generation_config["do_sample"]:
         generation_config["temperature"] = float(config["evaluation"]["temperature"])
         generation_config["top_p"] = float(config["evaluation"]["top_p"])
-    progress = progress_rows(rows, description=f"Evaluating {model_stage}")
-    for row in progress:
-        prompt_messages = list(row["prompt_messages"])
-        encoded = tokenizer.apply_chat_template(
-            prompt_messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        ).to(str(config["runtime"]["device"]))
-        start = time.perf_counter()
-        with torch.no_grad():
-            generated = model.generate(encoded, **generation_config)
-        seconds = time.perf_counter() - start
-        new_tokens = generated[0][encoded.shape[-1] :]
-        generated_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
-        predicted = extract_answer(generated_text)
-        reference = normalize_answer(str(row["reference_answer"]))
-        normalized_predicted = normalize_answer(predicted)
-        output.append(
-            {
-                "schema_version": "1.0",
-                "id": str(row["id"]),
-                "source_id": str(row["source_id"]),
-                "model_stage": model_stage,
-                "prompt_messages": prompt_messages,
-                "generated_text": generated_text,
-                "predicted_answer": predicted,
-                "normalized_predicted_answer": normalized_predicted,
-                "reference_answer": str(row["reference_answer"]),
-                "normalized_reference_answer": reference,
-                "answer_extracted": normalized_predicted is not None,
-                "exact_match": normalized_predicted is not None and reference is not None and normalized_predicted == reference,
-                "output_tokens": int(new_tokens.shape[-1]),
-                "generation_seconds": round(seconds, 6),
-            }
-        )
-        del encoded, generated
+    original_padding_side = getattr(tokenizer, "padding_side", None)
+    tokenizer.padding_side = "left"
+    try:
+        progress = progress_rows(range(0, len(rows), batch_size), description=f"Evaluating {model_stage}")
+        for start_index in progress:
+            batch = [rows[index] for index in range(start_index, min(start_index + batch_size, len(rows)))]
+            prompt_messages_batch = [list(row["prompt_messages"]) for row in batch]
+            prompts = [
+                tokenizer.apply_chat_template(
+                    prompt_messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                for prompt_messages in prompt_messages_batch
+            ]
+            encoded = tokenizer(
+                prompts,
+                return_tensors="pt",
+                padding=True,
+                add_special_tokens=False,
+            ).to(str(config["runtime"]["device"]))
+            start = time.perf_counter()
+            with torch.inference_mode():
+                generated = model.generate(**encoded, **generation_config)
+            seconds_per_example = (time.perf_counter() - start) / len(batch)
+            prompt_width = int(encoded["input_ids"].shape[-1])
+            for row, prompt_messages, generated_ids in zip(batch, prompt_messages_batch, generated):
+                new_tokens = generated_ids[prompt_width:]
+                generated_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
+                predicted = extract_answer(generated_text)
+                reference = normalize_answer(str(row["reference_answer"]))
+                normalized_predicted = normalize_answer(predicted)
+                output.append(
+                    {
+                        "schema_version": "1.0",
+                        "id": str(row["id"]),
+                        "source_id": str(row["source_id"]),
+                        "model_stage": model_stage,
+                        "prompt_messages": prompt_messages,
+                        "generated_text": generated_text,
+                        "predicted_answer": predicted,
+                        "normalized_predicted_answer": normalized_predicted,
+                        "reference_answer": str(row["reference_answer"]),
+                        "normalized_reference_answer": reference,
+                        "answer_extracted": normalized_predicted is not None,
+                        "exact_match": normalized_predicted is not None
+                        and reference is not None
+                        and normalized_predicted == reference,
+                        "output_tokens": int(new_tokens.shape[-1]),
+                        "generation_seconds": round(seconds_per_example, 6),
+                    }
+                )
+            del encoded, generated
+    finally:
+        if original_padding_side is not None:
+            tokenizer.padding_side = original_padding_side
     return output
 
 
@@ -287,4 +309,3 @@ def _normalize_decimal(value: str) -> str | None:
     if decimal == decimal.to_integral_value():
         return str(int(decimal))
     return format(decimal.normalize(), "f")
-

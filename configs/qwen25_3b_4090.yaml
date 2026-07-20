@@ -144,7 +144,7 @@ dpo:
 
 evaluation:
   output_dir: outputs/results/formal
-  batch_size: 1
+  batch_size: 8
   max_new_tokens: 512
   do_sample: false
   temperature: 0.0
