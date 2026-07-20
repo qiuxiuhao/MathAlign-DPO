@@ -70,7 +70,8 @@ def generate_predictions(
         "pad_token_id": tokenizer.pad_token_id,
         "eos_token_id": tokenizer.eos_token_id,
     }
-    for row in rows:
+    progress = progress_rows(rows, description=f"Evaluating {model_stage}")
+    for row in progress:
         prompt_messages = list(row["prompt_messages"])
         encoded = tokenizer.apply_chat_template(
             prompt_messages,
@@ -107,6 +108,16 @@ def generate_predictions(
         )
         del encoded, generated
     return output
+
+
+def progress_rows(rows: Dataset, description: str) -> Any:
+    """Wrap evaluation rows with tqdm when it is available."""
+
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        return rows
+    return tqdm(rows, total=len(rows), desc=description, dynamic_ncols=True)
 
 
 def summarize_predictions(predictions: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

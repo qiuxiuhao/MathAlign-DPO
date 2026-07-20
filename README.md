@@ -50,6 +50,15 @@ data/raw/numina_math/
 
 ## 环境
 
+创建并激活 conda 环境：
+
+```bash
+conda create -n mathalign-dpo python=3.11 -y
+conda activate mathalign-dpo
+```
+
+安装依赖：
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -78,7 +87,21 @@ RTX 4090 formal 模式使用：
 
 ## Stage 1 数据预处理
 
-Stage 1 同时生成 mini 和 formal 的 SFT、DPO、evaluation 数据：
+Stage 1 会自动处理数据下载。首次运行时，它会从 Hugging Face 下载：
+
+```text
+AI-MO/NuminaMath-CoT
+```
+
+并保存到本地 raw 目录：
+
+```text
+data/raw/numina_math/
+```
+
+后续再次运行时，只要 `data/raw/numina_math/` 已存在，就会直接使用本地 raw Dataset，不再重复访问远程数据集。
+
+下载 raw 数据并生成 mini/formal 全部处理后数据：
 
 ```bash
 python scripts/prepare_data.py \
@@ -87,7 +110,7 @@ python scripts/prepare_data.py \
   --overwrite
 ```
 
-强制重新下载 raw 数据：
+如果需要丢弃本地 raw 数据并强制重新下载：
 
 ```bash
 python scripts/prepare_data.py \
@@ -112,9 +135,11 @@ SFT 主要产物：
 ```text
 outputs/mini/sft/
 ├── adapter/
+├── best_adapter/
 ├── tokenizer/
 ├── train_metrics.json
 ├── eval_metrics.json
+├── best_adapter_metrics.json
 ├── base_sft_predictions.jsonl
 ├── base_sft_summary.json
 └── run_config.json
@@ -134,9 +159,11 @@ DPO 主要产物：
 ```text
 outputs/mini/dpo/
 ├── adapter/
+├── best_adapter/
 ├── tokenizer/
 ├── train_metrics.json
 ├── eval_metrics.json
+├── best_adapter_metrics.json
 ├── base_sft_dpo_predictions.jsonl
 ├── base_sft_dpo_summary.json
 └── run_config.json
@@ -164,9 +191,11 @@ formal SFT 主要产物：
 ```text
 outputs/formal/sft/
 ├── adapter/
+├── best_adapter/
 ├── tokenizer/
 ├── train_metrics.json
 ├── eval_metrics.json
+├── best_adapter_metrics.json
 ├── base_sft_predictions.jsonl
 ├── base_sft_summary.json
 └── run_config.json
@@ -186,9 +215,11 @@ formal DPO 主要产物：
 ```text
 outputs/formal/dpo/
 ├── adapter/
+├── best_adapter/
 ├── tokenizer/
 ├── train_metrics.json
 ├── eval_metrics.json
+├── best_adapter_metrics.json
 ├── base_sft_dpo_predictions.jsonl
 ├── base_sft_dpo_summary.json
 └── run_config.json
@@ -220,5 +251,6 @@ reports/stage_3_refactor_report.md
 
 - `data/raw/`、`data/processed/`、`model/` 和 `outputs/` 不应提交到 Git。
 - Stage 2 和 Stage 3 不负责重新构造数据。
+- `adapter/` 保存训练结束时的最新 adapter，`best_adapter/` 保存验证集 `eval_loss` 最低的 adapter。
 - DPO 会校验 SFT adapter 的运行模式和模型身份，避免 formal DPO 误用 Mini SFT adapter。
 - formal 配置要求 CUDA 设备名包含 `RTX 4090`。

@@ -15,6 +15,7 @@ from configs.load_config import apply_runtime_overrides, load_config
 from dpo.data import DPODatasets, load_dpo_datasets
 from dpo.evaluate import evaluate_base_sft_dpo
 from dpo.modeling import load_dpo_for_generation, load_policy_from_sft_adapter, validate_sft_dir
+from sft.checkpointing import BestAdapterSaverCallback, ensure_best_adapter_saved, save_adapter
 from sft.evaluate import release_accelerator_memory, write_json, write_jsonl
 from sft.modeling import validate_runtime, validate_tokenizer
 from transformers import TrainerCallback
@@ -94,10 +95,10 @@ def train_dpo(
         )
         policy_metadata = dict(loaded.metadata)
         tokenizer_metadata = validate_tokenizer(loaded.tokenizer)
-        train_metrics, eval_metrics = train_with_trl(config, loaded.model, loaded.tokenizer, datasets, out_dir)
+        train_metrics, eval_metrics, best_adapter = train_with_trl(config, loaded.model, loaded.tokenizer, datasets, out_dir)
         adapter_dir = out_dir / "adapter"
         tokenizer_dir = out_dir / "tokenizer"
-        save_adapter(loaded.model, adapter_dir)
+        save_adapter(loaded.model, adapter_dir, selected_adapters=["default"])
         loaded.tokenizer.save_pretrained(tokenizer_dir)
         del loaded
         release_accelerator_memory()
@@ -133,6 +134,8 @@ def train_dpo(
             "model": model_identity(config),
             "model_loader": policy_metadata,
             "tokenizer": tokenizer_metadata,
+            "adapter_paths": {"latest": str(adapter_dir), "best": str(best_adapter["path"]), "tokenizer": str(tokenizer_dir)},
+            "best_adapter": best_adapter,
             "dataset_paths": {"dpo": str(datasets.path), "evaluation": str(Path(str(config["data"][f"{config['project']['run_mode']}_dir"])) / "evaluation")},
             "dataset_counts": {"train": len(datasets.train), "validation": len(datasets.validation)},
             "dpo_config": dpo_runtime_metadata(config),
@@ -162,12 +165,13 @@ def train_with_trl(
     tokenizer: Any,
     datasets: DPODatasets,
     output_dir: Path,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Train with TRL DPOTrainer using Stage 1 prompt/chosen/rejected rows."""
 
     import trl
 
     args = dpo_config(trl, config, output_dir)
+    best_callback = BestAdapterSaverCallback(output_dir / "best_adapter", selected_adapters=["default"])
     trainer = trl.DPOTrainer(
         model=model,
         ref_model=None,
@@ -175,7 +179,7 @@ def train_with_trl(
         train_dataset=datasets.train,
         eval_dataset=datasets.validation,
         processing_class=tokenizer,
-        callbacks=[FiniteLossCallback()],
+        callbacks=[FiniteLossCallback(), best_callback],
     )
     train_result = trainer.train()
     train_metrics = dict(getattr(train_result, "metrics", {}) or {})
@@ -185,7 +189,9 @@ def train_with_trl(
     write_json(output_dir / "train_metrics.json", train_metrics)
     write_json(output_dir / "eval_metrics.json", eval_metrics)
     write_jsonl(output_dir / "loss_history.jsonl", [row for row in trainer.state.log_history if "loss" in row or "eval_loss" in row])
-    return train_metrics, eval_metrics
+    best_adapter = ensure_best_adapter_saved(best_callback, model, eval_metrics)
+    write_json(output_dir / "best_adapter_metrics.json", best_adapter)
+    return train_metrics, eval_metrics, best_adapter
 
 
 def dpo_config(trl: Any, config: Mapping[str, Any], output_dir: Path) -> Any:
@@ -271,15 +277,6 @@ def reload_dpo_adapter_samples(
             }
         )
     return output
-
-
-def save_adapter(model: Any, adapter_dir: Path) -> None:
-    """Save only the trainable DPO adapter when PEFT exposes adapter selection."""
-
-    try:
-        model.save_pretrained(adapter_dir, selected_adapters=["default"])
-    except TypeError:
-        model.save_pretrained(adapter_dir)
 
 
 def dpo_runtime_metadata(config: Mapping[str, Any]) -> dict[str, Any]:

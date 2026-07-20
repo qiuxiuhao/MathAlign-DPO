@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from configs.load_config import apply_runtime_overrides, load_config
+from sft.checkpointing import BestAdapterSaverCallback, ensure_best_adapter_saved, save_adapter
 from sft.data import SFTDatasets, load_sft_datasets
 from sft.evaluate import evaluate_base_and_sft, write_json, write_jsonl
 from sft.modeling import load_lora_model_and_tokenizer, load_sft_for_generation, validate_runtime, validate_tokenizer
@@ -83,10 +84,10 @@ def train_sft(
         )
         loaded = load_lora_model_and_tokenizer(config)
         tokenizer_metadata = validate_tokenizer(loaded.tokenizer)
-        train_metrics, eval_metrics = train_with_trl(config, loaded.model, loaded.tokenizer, datasets, out_dir)
+        train_metrics, eval_metrics, best_adapter = train_with_trl(config, loaded.model, loaded.tokenizer, datasets, out_dir)
         adapter_dir = out_dir / "adapter"
         tokenizer_dir = out_dir / "tokenizer"
-        loaded.model.save_pretrained(adapter_dir)
+        save_adapter(loaded.model, adapter_dir, selected_adapters=["default"])
         loaded.tokenizer.save_pretrained(tokenizer_dir)
         reload_samples = reload_adapter_samples(
             config,
@@ -118,6 +119,8 @@ def train_sft(
             "model": model_identity(config),
             "model_loader": loaded.metadata,
             "tokenizer": tokenizer_metadata,
+            "adapter_paths": {"latest": str(adapter_dir), "best": str(best_adapter["path"]), "tokenizer": str(tokenizer_dir)},
+            "best_adapter": best_adapter,
             "dataset_paths": {
                 "sft": str(datasets.path),
                 "evaluation": str(Path(str(config["data"][f"{config['project']['run_mode']}_dir"])) / "evaluation"),
@@ -149,19 +152,20 @@ def train_with_trl(
     tokenizer: Any,
     datasets: SFTDatasets,
     output_dir: Path,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Train with TRL SFTTrainer using Stage 1 prompt/completion rows."""
 
     import trl
 
     args = sft_config(trl, config, output_dir)
+    best_callback = BestAdapterSaverCallback(output_dir / "best_adapter", selected_adapters=["default"])
     trainer = trl.SFTTrainer(
         model=model,
         args=args,
         train_dataset=datasets.train,
         eval_dataset=datasets.validation,
         processing_class=tokenizer,
-        callbacks=[FiniteLossCallback()],
+        callbacks=[FiniteLossCallback(), best_callback],
     )
     train_result = trainer.train()
     train_metrics = dict(getattr(train_result, "metrics", {}) or {})
@@ -171,7 +175,9 @@ def train_with_trl(
     write_json(output_dir / "train_metrics.json", train_metrics)
     write_json(output_dir / "eval_metrics.json", eval_metrics)
     write_jsonl(output_dir / "loss_history.jsonl", [row for row in trainer.state.log_history if "loss" in row or "eval_loss" in row])
-    return train_metrics, eval_metrics
+    best_adapter = ensure_best_adapter_saved(best_callback, model, eval_metrics)
+    write_json(output_dir / "best_adapter_metrics.json", best_adapter)
+    return train_metrics, eval_metrics, best_adapter
 
 
 def sft_config(trl: Any, config: Mapping[str, Any], output_dir: Path) -> Any:
