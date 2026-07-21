@@ -271,8 +271,8 @@ Step 200: 77.8%
 | 模型 | Strict Exact Match | Math Equivalent |
 |---|---:|---:|
 | Base | 64.6% | 65.2% |
-| SFT | 67.8% | 68.5% |
-| Full-DPO | 70.1% | 70.9% |
+| SFT | 69.9% | 70.3% |
+| Full-DPO | 72.1% | 72.9% |
 
 相对变化：
 
