@@ -274,27 +274,6 @@ Step 200: 77.8%
 | SFT | 69.9% | 70.3% |
 | Full-DPO | 72.1% | 72.9% |
 
-相对变化：
-
-```text
-Base → SFT
-
-Strict Exact Match:
-64.6% → 67.8%，提升 3.2 个百分点
-
-Math Equivalent:
-65.2% → 68.5%，提升 3.3 个百分点
-```
-
-```text
-SFT → Full-DPO
-
-Strict Exact Match:
-67.8% → 70.1%，提升 2.3 个百分点
-
-Math Equivalent:
-68.5% → 70.9%，提升 2.4 个百分点
-```
 ---
 
 ## 8. 统一评测
