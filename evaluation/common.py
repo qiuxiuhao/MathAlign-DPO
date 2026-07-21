@@ -192,8 +192,11 @@ def extract_answer(text: str, finish_reason: str = "eos") -> tuple[str | None, s
         answer = _strip_answer(hash_answers[-1])
         if answer:
             return answer, "hash_answer"
+    answer_line = _extract_labeled_answer_line(text)
+    if answer_line is not None:
+        return answer_line, "labeled_answer_line"
     label_answers = re.findall(
-        r"(?is)(?:final\s+answer|correct\s+answer|answer)\s*(?:is|=|:)?\s*(?:\\boxed\{)?\s*(\(?[A-E]\)?|[-+]?\d+(?:\.\d+)?%?|[-+]?\d+\s*/\s*[-+]?\d+|\\frac\{[-+]?\d+\}\{[-+]?\d+\})",
+        r"(?is)(?:final\s+answer|correct\s+answer|answer)\s*(?:(?:is)?\s*:|is|=)?\s*(?:\\boxed\{)?\s*(\(?[A-E]\)?|[-+]?\d+(?:\.\d+)?(?:\\?%)?|[-+]?\d+\s*/\s*[-+]?\d+|\\d?frac\{[-+]?\d+\}\{[-+]?\d+\})",
         text,
     )
     if label_answers:
@@ -251,6 +254,9 @@ def normalize_answer(answer: str | None) -> str | None:
         return None
     if re.fullmatch(r"\(?[A-Ea-e]\)?", cleaned):
         return cleaned.strip("()").upper()
+    assignment = re.fullmatch(r"[A-Za-z]\s*=\s*(.+)", cleaned)
+    if assignment is not None:
+        cleaned = assignment.group(1).strip()
     fraction = _normalize_fraction(cleaned)
     if fraction is not None:
         return fraction
@@ -318,6 +324,11 @@ def compare_answers(
     reference_numeric = _answer_decimal(reference)
     if predicted_numeric is not None and reference_numeric is not None and predicted_numeric == reference_numeric:
         return True, "numeric_equivalent"
+    if _percent_context_equivalent(predicted, reference, prompt_messages):
+        return True, "percent_context_equivalent"
+    embedded_predicted = _single_embedded_numeric(predicted)
+    if embedded_predicted is not None and reference_numeric is not None and embedded_predicted == reference_numeric:
+        return True, "embedded_numeric_equivalent"
 
     predicted_unitless = _strip_trailing_unit(predicted)
     reference_unitless = _strip_trailing_unit(reference)
@@ -379,9 +390,25 @@ def _extract_final_line_answer(text: str) -> tuple[str | None, str]:
         cleaned = _strip_answer(line)
         if re.fullmatch(r"\(?[A-E]\)?", cleaned):
             return cleaned, "final_line_choice"
-        if re.fullmatch(r"\\frac\{[-+]?\d+\}\{[-+]?\d+\}|[-+]?\d+\s*/\s*[-+]?\d+|[-+]?\d+(?:\.\d+)?%?", cleaned):
+        if re.fullmatch(r"\\d?frac\{[-+]?\d+\}\{[-+]?\d+\}|[-+]?\d+\s*/\s*[-+]?\d+|[-+]?\d+(?:\.\d+)?(?:\\?%)?", cleaned):
             return cleaned, "final_line_numeric"
     return None, "not_found"
+
+
+def _extract_labeled_answer_line(text: str) -> str | None:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in reversed(lines[-5:]):
+        match = re.search(r"(?i)(?:the\s+)?(?:final\s+answer|correct\s+answer|answer)\s*(?:(?:is)?\s*:|is|=)\s*(.+)$", line)
+        if not match:
+            continue
+        answer = _strip_answer(match.group(1))
+        boxed = _extract_last_boxed(answer)
+        if boxed is not None:
+            answer = boxed
+        answer = re.sub(r"^\\boxed\{(.+)\}$", r"\1", answer).strip()
+        if answer:
+            return answer
+    return None
 
 
 def _answer_decimal(value: str | None) -> Fraction | None:
@@ -389,12 +416,15 @@ def _answer_decimal(value: str | None) -> Fraction | None:
         return None
     compact = _strip_trailing_unit(value)
     compact = _clean_math_text(compact)
+    assignment = re.fullmatch(r"[A-Za-z]\s*=\s*(.+)", compact)
+    if assignment is not None:
+        compact = assignment.group(1).strip()
     if not compact:
         return None
     percent = compact.endswith("%")
     if percent:
         compact = compact[:-1].strip()
-    latex = re.fullmatch(r"\\frac\{([-+]?\d+)\}\{([-+]?\d+)\}", compact)
+    latex = re.fullmatch(r"\\d?frac\{([-+]?\d+)\}\{([-+]?\d+)\}", compact)
     slash = re.fullmatch(r"([-+]?\d+)\s*/\s*([-+]?\d+)", compact)
     try:
         if latex:
@@ -420,7 +450,7 @@ def _strip_trailing_unit(value: str | None) -> str:
     if value is None:
         return ""
     cleaned = _clean_math_text(value)
-    numeric = r"(?:\\frac\{[-+]?\d+\}\{[-+]?\d+\}|[-+]?\d+\s*/\s*[-+]?\d+|[-+]?(?:\d+(?:\.\d*)?|\.\d+)\s*%?)"
+    numeric = r"(?:\\d?frac\{[-+]?\d+\}\{[-+]?\d+\}|[-+]?\d+\s*/\s*[-+]?\d+|[-+]?(?:\d+(?:\.\d*)?|\.\d+)\s*%?)"
     match = re.fullmatch(rf"\s*({numeric})\s*(?:[A-Za-z°²³^/\\{{}}\-\s]+)?\s*", cleaned)
     if match:
         return re.sub(r"\s+%", "%", match.group(1).strip())
@@ -433,10 +463,56 @@ def _clean_math_text(value: str) -> str:
     if boxed is not None:
         cleaned = boxed
     cleaned = re.sub(r"\\text\{[^{}]*\}", "", cleaned)
+    cleaned = cleaned.replace("\\%", "%").replace("\\$", "")
     cleaned = cleaned.replace("\\(", "").replace("\\)", "").replace("$", "")
     cleaned = cleaned.replace("\\left", "").replace("\\right", "")
     cleaned = cleaned.replace(",", "").strip().rstrip(".。,:;")
     return cleaned
+
+
+def _single_embedded_numeric(value: str | None) -> Fraction | None:
+    if value is None:
+        return None
+    cleaned = _clean_math_text(value)
+    numeric = r"\\d?frac\{[-+]?\d+\}\{[-+]?\d+\}|[-+]?\d+\s*/\s*[-+]?\d+|[-+]?(?:\d+(?:\.\d*)?|\.\d+)\s*%?"
+    matches = re.findall(numeric, cleaned)
+    if len(matches) != 1:
+        return None
+    return _answer_decimal(matches[0])
+
+
+def _percent_context_equivalent(
+    predicted: str | None,
+    reference: str,
+    prompt_messages: Sequence[Mapping[str, Any]] | Sequence[Any],
+) -> bool:
+    prompt_text = "\n".join(_message_content(message) for message in prompt_messages).lower()
+    if "percent" not in prompt_text and "percentage" not in prompt_text and "%" not in prompt_text:
+        return False
+    predicted_percent = _percent_display_number(predicted)
+    reference_percent = _percent_display_number(reference)
+    predicted_numeric = _answer_decimal(predicted)
+    reference_numeric = _answer_decimal(reference)
+    if predicted_percent is not None and reference_numeric is not None and predicted_percent == reference_numeric:
+        return True
+    if reference_percent is not None and predicted_numeric is not None and reference_percent == predicted_numeric:
+        return True
+    return False
+
+
+def _percent_display_number(value: str | None) -> Fraction | None:
+    if value is None:
+        return None
+    compact = _clean_math_text(value)
+    if not compact.endswith("%"):
+        return None
+    compact = compact[:-1].strip()
+    if not re.fullmatch(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", compact):
+        return None
+    try:
+        return Fraction(Decimal(compact))
+    except (InvalidOperation, ValueError, ZeroDivisionError):
+        return None
 
 
 def _choice_content_match(
@@ -553,7 +629,7 @@ def _strip_answer(answer: str) -> str:
 
 def _normalize_fraction(value: str) -> str | None:
     compact = re.sub(r"\s+", "", value)
-    latex = re.fullmatch(r"\\frac\{([-+]?\d+)\}\{([-+]?\d+)\}", compact)
+    latex = re.fullmatch(r"\\d?frac\{([-+]?\d+)\}\{([-+]?\d+)\}", compact)
     slash = re.fullmatch(r"([-+]?\d+)/([-+]?\d+)", compact)
     if latex:
         numerator, denominator = int(latex.group(1)), int(latex.group(2))
